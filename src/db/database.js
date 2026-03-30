@@ -36,6 +36,11 @@ db.exec(`
     pipedrive_deal_id    INTEGER,
     pipedrive_note_id    INTEGER,
 
+    -- Salgs-intelligence kontekst
+    call_type       TEXT DEFAULT 'unknown', -- demo | onboarding | support | sales | follow_up | unknown
+    sales_rep       TEXT,                   -- Hvem fra Zalye tog opkaldet (navn eller ID)
+    pipeline_stage  TEXT,                   -- Pipedrive-stadie da opkaldet skete (fx 'Kvalificeret', 'Demo booket')
+
     -- AI pipeline status
     transcription_status TEXT DEFAULT 'pending',  -- pending | processing | done | failed
     transcription        TEXT,
@@ -52,6 +57,78 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_calls_deal      ON calls(pipedrive_deal_id);
   CREATE INDEX IF NOT EXISTS idx_calls_ended_at  ON calls(ended_at);
   CREATE INDEX IF NOT EXISTS idx_calls_status    ON calls(transcription_status);
+  CREATE INDEX IF NOT EXISTS idx_calls_type      ON calls(call_type);
+  CREATE INDEX IF NOT EXISTS idx_calls_rep       ON calls(sales_rep);
+  CREATE INDEX IF NOT EXISTS idx_calls_stage     ON calls(pipeline_stage);
+
+  -- ============================================================
+  -- Sales Intelligence: Insights fra hver samtale
+  -- Claude udtrækker automatisk disse fra transskriptionen
+  -- ============================================================
+  CREATE TABLE IF NOT EXISTS call_insights (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_id         INTEGER NOT NULL REFERENCES calls(id),
+
+    -- Sentiment og outcome
+    sentiment       TEXT,                  -- positive | neutral | negative
+    call_outcome    TEXT,                  -- interested | not_interested | meeting_booked | deal_closed | needs_follow_up | no_answer
+
+    -- Salgsrelevante signaler (JSON arrays)
+    pain_points     TEXT,                  -- ["Bruger for lang tid på fakturering", "Mangler overblik"]
+    objections      TEXT,                  -- ["For dyrt", "Har allerede et system"]
+    buying_signals  TEXT,                  -- ["Spurgte til pris", "Vil gerne se demo"]
+    competitor_mentions TEXT,              -- ["Bruger X system i dag", "Har set på Y"]
+    next_steps      TEXT,                  -- ["Send tilbud inden fredag", "Book demo næste uge"]
+
+    -- Kundens stadie i salgsprocessen
+    customer_stage  TEXT,                  -- lead | qualified | demo_done | proposal_sent | negotiation | closed_won | closed_lost | churned
+
+    -- Scoring
+    engagement_score INTEGER,             -- 1-10: hvor engageret var kunden?
+    conversion_likelihood INTEGER,        -- 1-10: hvor sandsynligt er det at de konverterer?
+
+    -- Fritekst-noter fra AI
+    ai_coaching_note TEXT,                -- "God åbning, men glemte at spørge til budget. Prøv at..."
+
+    created_at      INTEGER DEFAULT (strftime('%s', 'now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_insights_call    ON call_insights(call_id);
+  CREATE INDEX IF NOT EXISTS idx_insights_outcome ON call_insights(call_outcome);
+  CREATE INDEX IF NOT EXISTS idx_insights_stage   ON call_insights(customer_stage);
+
+  -- ============================================================
+  -- Deal Outcomes: Tracker resultater over tid per deal
+  -- Gør det muligt at analysere: hvilke kunder lukker vi / lukker vi ikke?
+  -- ============================================================
+  CREATE TABLE IF NOT EXISTS deal_outcomes (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipedrive_deal_id   INTEGER NOT NULL,
+    pipedrive_person_id INTEGER,
+
+    -- Status
+    outcome             TEXT NOT NULL,     -- won | lost | stalled | active
+    reason              TEXT,              -- Hvorfor vandt/tabte vi? (fra AI eller manuelt)
+
+    -- Aggregerede metrics (beregnet fra call_insights)
+    total_calls         INTEGER DEFAULT 0,
+    total_duration_sec  INTEGER DEFAULT 0,
+    avg_sentiment       TEXT,              -- positive | neutral | negative (baseret på alle opkald)
+    top_objections      TEXT,              -- JSON: de hyppigste indvendinger for dette deal
+    top_pain_points     TEXT,              -- JSON: de hyppigste smertepunkter
+
+    -- Tidslinje
+    first_contact_at    TEXT,
+    last_contact_at     TEXT,
+    outcome_at          TEXT,              -- Hvornår blev deal lukket/tabt
+    days_in_pipeline    INTEGER,
+
+    created_at          INTEGER DEFAULT (strftime('%s', 'now')),
+    updated_at          INTEGER DEFAULT (strftime('%s', 'now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_outcomes_deal    ON deal_outcomes(pipedrive_deal_id);
+  CREATE INDEX IF NOT EXISTS idx_outcomes_outcome ON deal_outcomes(outcome);
 
   -- Systemstate: gemmer hvornår vi sidst pollede
   CREATE TABLE IF NOT EXISTS system_state (
@@ -154,6 +231,187 @@ const calls = {
   },
 };
 
+// ============================================================
+// Sales Intelligence hjælpefunktioner
+// ============================================================
+
+const insights = {
+  upsert(callId, insightData) {
+    const existing = db.prepare('SELECT id FROM call_insights WHERE call_id = ?').get(callId);
+    if (existing) {
+      return db.prepare(`
+        UPDATE call_insights SET
+          sentiment = ?, call_outcome = ?,
+          pain_points = ?, objections = ?, buying_signals = ?,
+          competitor_mentions = ?, next_steps = ?,
+          customer_stage = ?, engagement_score = ?, conversion_likelihood = ?,
+          ai_coaching_note = ?
+        WHERE call_id = ?
+      `).run(
+        insightData.sentiment || null,
+        insightData.callOutcome || null,
+        insightData.painPoints ? JSON.stringify(insightData.painPoints) : null,
+        insightData.objections ? JSON.stringify(insightData.objections) : null,
+        insightData.buyingSignals ? JSON.stringify(insightData.buyingSignals) : null,
+        insightData.competitorMentions ? JSON.stringify(insightData.competitorMentions) : null,
+        insightData.nextSteps ? JSON.stringify(insightData.nextSteps) : null,
+        insightData.customerStage || null,
+        insightData.engagementScore || null,
+        insightData.conversionLikelihood || null,
+        insightData.aiCoachingNote || null,
+        callId
+      );
+    } else {
+      return db.prepare(`
+        INSERT INTO call_insights (
+          call_id, sentiment, call_outcome,
+          pain_points, objections, buying_signals,
+          competitor_mentions, next_steps,
+          customer_stage, engagement_score, conversion_likelihood,
+          ai_coaching_note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        callId,
+        insightData.sentiment || null,
+        insightData.callOutcome || null,
+        insightData.painPoints ? JSON.stringify(insightData.painPoints) : null,
+        insightData.objections ? JSON.stringify(insightData.objections) : null,
+        insightData.buyingSignals ? JSON.stringify(insightData.buyingSignals) : null,
+        insightData.competitorMentions ? JSON.stringify(insightData.competitorMentions) : null,
+        insightData.nextSteps ? JSON.stringify(insightData.nextSteps) : null,
+        insightData.customerStage || null,
+        insightData.engagementScore || null,
+        insightData.conversionLikelihood || null,
+        insightData.aiCoachingNote || null
+      );
+    }
+  },
+
+  getByCallId(callId) {
+    const row = db.prepare('SELECT * FROM call_insights WHERE call_id = ?').get(callId);
+    if (!row) return null;
+    return {
+      ...row,
+      pain_points:        row.pain_points ? JSON.parse(row.pain_points) : [],
+      objections:         row.objections ? JSON.parse(row.objections) : [],
+      buying_signals:     row.buying_signals ? JSON.parse(row.buying_signals) : [],
+      competitor_mentions: row.competitor_mentions ? JSON.parse(row.competitor_mentions) : [],
+      next_steps:         row.next_steps ? JSON.parse(row.next_steps) : [],
+    };
+  },
+
+  getByDealId(dealId) {
+    return db.prepare(`
+      SELECT ci.*, c.started_at, c.direction, c.phone_number, c.call_type
+      FROM call_insights ci
+      JOIN calls c ON c.id = ci.call_id
+      WHERE c.pipedrive_deal_id = ?
+      ORDER BY c.started_at DESC
+    `).all(dealId).map(row => ({
+      ...row,
+      pain_points:        row.pain_points ? JSON.parse(row.pain_points) : [],
+      objections:         row.objections ? JSON.parse(row.objections) : [],
+      buying_signals:     row.buying_signals ? JSON.parse(row.buying_signals) : [],
+      competitor_mentions: row.competitor_mentions ? JSON.parse(row.competitor_mentions) : [],
+      next_steps:         row.next_steps ? JSON.parse(row.next_steps) : [],
+    })),
+  },
+
+  // Hent aggregerede salgs-trends (til fremtidig sales coach)
+  getTrends({ fromDate, toDate, callType } = {}) {
+    let where = '1=1';
+    const params = [];
+    if (fromDate)  { where += ' AND c.started_at >= ?'; params.push(fromDate); }
+    if (toDate)    { where += ' AND c.started_at <= ?'; params.push(toDate); }
+    if (callType)  { where += ' AND c.call_type = ?';   params.push(callType); }
+
+    return db.prepare(`
+      SELECT
+        c.call_type,
+        ci.call_outcome,
+        ci.customer_stage,
+        COUNT(*) as count,
+        ROUND(AVG(ci.engagement_score), 1) as avg_engagement,
+        ROUND(AVG(ci.conversion_likelihood), 1) as avg_conversion
+      FROM call_insights ci
+      JOIN calls c ON c.id = ci.call_id
+      WHERE ${where}
+      GROUP BY c.call_type, ci.call_outcome, ci.customer_stage
+      ORDER BY count DESC
+    `).all(...params);
+  },
+};
+
+const dealOutcomes = {
+  upsert(data) {
+    const existing = db.prepare('SELECT id FROM deal_outcomes WHERE pipedrive_deal_id = ?').get(data.pipedriveDeealId || data.pipedrive_deal_id);
+    if (existing) {
+      return db.prepare(`
+        UPDATE deal_outcomes SET
+          outcome = ?, reason = ?,
+          total_calls = ?, total_duration_sec = ?,
+          avg_sentiment = ?, top_objections = ?, top_pain_points = ?,
+          first_contact_at = ?, last_contact_at = ?,
+          outcome_at = ?, days_in_pipeline = ?,
+          updated_at = strftime('%s', 'now')
+        WHERE pipedrive_deal_id = ?
+      `).run(
+        data.outcome, data.reason || null,
+        data.totalCalls || 0, data.totalDurationSec || 0,
+        data.avgSentiment || null,
+        data.topObjections ? JSON.stringify(data.topObjections) : null,
+        data.topPainPoints ? JSON.stringify(data.topPainPoints) : null,
+        data.firstContactAt || null, data.lastContactAt || null,
+        data.outcomeAt || null, data.daysInPipeline || null,
+        data.pipedriveDealId || data.pipedrive_deal_id
+      );
+    } else {
+      return db.prepare(`
+        INSERT INTO deal_outcomes (
+          pipedrive_deal_id, pipedrive_person_id,
+          outcome, reason,
+          total_calls, total_duration_sec,
+          avg_sentiment, top_objections, top_pain_points,
+          first_contact_at, last_contact_at,
+          outcome_at, days_in_pipeline
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        data.pipedriveDealId || data.pipedrive_deal_id,
+        data.pipedrivePersonId || data.pipedrive_person_id || null,
+        data.outcome, data.reason || null,
+        data.totalCalls || 0, data.totalDurationSec || 0,
+        data.avgSentiment || null,
+        data.topObjections ? JSON.stringify(data.topObjections) : null,
+        data.topPainPoints ? JSON.stringify(data.topPainPoints) : null,
+        data.firstContactAt || null, data.lastContactAt || null,
+        data.outcomeAt || null, data.daysInPipeline || null
+      );
+    }
+  },
+
+  getByDealId(dealId) {
+    return db.prepare('SELECT * FROM deal_outcomes WHERE pipedrive_deal_id = ?').get(dealId);
+  },
+
+  getWonVsLost({ fromDate, toDate } = {}) {
+    let where = '1=1';
+    const params = [];
+    if (fromDate) { where += ' AND outcome_at >= ?'; params.push(fromDate); }
+    if (toDate)   { where += ' AND outcome_at <= ?'; params.push(toDate); }
+
+    return db.prepare(`
+      SELECT
+        outcome,
+        COUNT(*) as count,
+        ROUND(AVG(total_calls), 1) as avg_calls,
+        ROUND(AVG(days_in_pipeline), 0) as avg_days
+      FROM deal_outcomes
+      WHERE ${where}
+      GROUP BY outcome
+    `).all(...params);
+  },
+};
+
 const state = {
   get(key) {
     const row = db.prepare('SELECT value FROM system_state WHERE key = ?').get(key);
@@ -167,4 +425,4 @@ const state = {
   },
 };
 
-module.exports = { db, calls, state };
+module.exports = { db, calls, insights, dealOutcomes, state };
