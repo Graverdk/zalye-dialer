@@ -17,10 +17,6 @@ module.exports = {
     accessToken: required('RELATEL_ACCESS_TOKEN'),
   },
 
-  openai: {
-    apiKey: required('OPENAI_API_KEY'),
-  },
-
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
   },
