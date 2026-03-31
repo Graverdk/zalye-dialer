@@ -39,16 +39,26 @@ async function fetchNewCalls() {
     try {
       const normalized = relatel.normalizeCall(rc);
 
+      // Check om opkaldet er nyt inden upsert
+      const existingCall = calls.getByUuid(normalized.relatel_uuid);
+      const isNew = !existingCall;
+
       // Gem/opdater i database
       calls.upsert(normalized);
 
-      // Sæt transcription_status til pending hvis der er en optagelse
-      if (normalized.recording_url && !calls.getByUuid(normalized.relatel_uuid)?.transcription) {
-        // Opret Pipedrive-kobling baseret på telefonnummer
+      // Log optagelsesstatus for debug
+      if (normalized.recording_url) {
+        console.log(`[Poll] Opkald ${normalized.relatel_uuid}: har optagelse → klar til transskription`);
+      } else {
+        console.log(`[Poll] Opkald ${normalized.relatel_uuid}: ingen optagelse (varighed: ${normalized.duration_sec}s)`);
+      }
+
+      // Link til Pipedrive for alle NYE opkald, eller opkald der endnu ikke er linket
+      if (isNew || !existingCall.pipedrive_person_id) {
         await linkToPipedrive(normalized);
       }
     } catch (err) {
-      console.error(`[Poll] Fejl ved behandling af opkald ${rc.uuid}:`, err.message);
+      console.error(`[Poll] Fejl ved behandling af opkald ${rc.call_uuid}:`, err.message);
     }
   }
 }
