@@ -4,12 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Zalye Dialer</title>
-    <script src="https://cdn.jsdelivr.net/npm/@pipedrive/app-extensions-sdk/dist/index.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@pipedrive/app-extensions-sdk@0.5.1/dist/index.umd.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f8f9fa;
+            background: #fff;
             color: #333;
             min-height: 100vh;
             display: flex;
@@ -128,9 +128,7 @@
             padding: 4px 8px;
             max-height: 80px;
             overflow-y: auto;
-            display: none;
         }
-        /* States */
         body.state-calling .status-icon,
         body.state-calling .status-text,
         body.state-calling .status-hint { display: none; }
@@ -148,7 +146,6 @@
             <div class="header-subtitle">Via Relatel</div>
         </div>
     </div>
-
     <div class="content">
         <div class="phone-display" id="phoneDisplay">-</div>
         <div class="person-info" id="personInfo"></div>
@@ -158,7 +155,6 @@
         <div class="call-timer" id="callTimer">00:00</div>
         <div class="error-msg" id="errorMsg"></div>
     </div>
-
     <div class="actions">
         <button class="btn btn-call" id="btnCall" disabled>
             <span>&#128222;</span> Ring op
@@ -170,11 +166,8 @@
             <span>&#10006;</span> Luk
         </button>
     </div>
-
     <div class="debug-log" id="debugLog"></div>
-
     <script>
-        // State
         var currentPhone = null;
         var currentPersonId = null;
         var currentDealId = null;
@@ -182,8 +175,6 @@
         var callTimerInterval = null;
         var callSeconds = 0;
         var sdk = null;
-
-        // Elements
         var phoneDisplay = document.getElementById('phoneDisplay');
         var personInfo = document.getElementById('personInfo');
         var statusText = document.getElementById('statusText');
@@ -197,11 +188,8 @@
 
         function log(msg) {
             console.log('[ZalyeDialer] ' + msg);
-            if (debugLog) {
-                debugLog.style.display = 'block';
-                debugLog.textContent += msg + '\n';
-                debugLog.scrollTop = debugLog.scrollHeight;
-            }
+            debugLog.textContent += msg + '\n';
+            debugLog.scrollTop = debugLog.scrollHeight;
         }
 
         function showError(msg) {
@@ -231,67 +219,64 @@
             log('Telefonnummer sat: ' + phone + (name ? ' (' + name + ')' : ''));
         }
 
-        // Initialize Pipedrive SDK
         function initSDK() {
-            log('Initialiserer SDK...');
+            log('URL: ' + window.location.href);
+            log('Params: ' + window.location.search);
+            log('SDK type: ' + typeof window.AppExtensionsSDK);
+
             try {
-                if (typeof window.AppExtensionsSDK !== 'function') {
-                    log('FEJL: AppExtensionsSDK ikke fundet som funktion. Type: ' + typeof window.AppExtensionsSDK);
-                    return;
+                var SDK = window.AppExtensionsSDK;
+                if (typeof SDK !== 'function') {
+                    log('ERROR: SDK not a function, type=' + typeof SDK);
+                    if (SDK && SDK.default && typeof SDK.default === 'function') {
+                        SDK = SDK.default;
+                        log('Using SDK.default instead');
+                    } else {
+                        log('SDK keys: ' + Object.keys(window.AppExtensionsSDK || {}).join(','));
+                        return;
+                    }
                 }
 
-                sdk = new window.AppExtensionsSDK({ identifier: 'zalye-dialer' });
+                log('Creating SDK instance (no identifier)...');
+                sdk = new SDK();
+                log('SDK created, calling initialize...');
 
-                sdk.initialize({ size: { height: 400, width: 350 } }).then(function() {
-                    log('SDK initialiseret OK');
+                sdk.initialize({ size: { height: 400, width: 350 } })
+                    .then(function() {
+                        log('SDK initialized OK!');
 
-                    // Listen for VISIBILITY events (phone number clicks)
-                    sdk.listen({
-                        event: 'VISIBILITY',
-                        callback: function(data) {
-                            log('VISIBILITY event: ' + JSON.stringify(data));
-                            if (data && data.is_visible) {
-                                // Extract phone from context
-                                var context = data.context || data;
-                                var phone = context.phoneNumber || context.phone || context.number || null;
-                                var personId = context.personId || context.person_id || null;
-                                var dealId = context.dealId || context.deal_id || null;
-                                var name = context.personName || context.person_name || context.name || null;
-
-                                if (phone) {
-                                    currentPersonId = personId;
-                                    currentDealId = dealId;
-                                    setPhoneNumber(phone, name);
+                        sdk.listen({
+                            event: 'VISIBILITY',
+                            callback: function(data) {
+                                log('VISIBILITY: ' + JSON.stringify(data));
+                                if (data && data.is_visible) {
+                                    var ctx = data.context || data;
+                                    var phone = ctx.phoneNumber || ctx.phone || ctx.number || null;
+                                    var pId = ctx.personId || ctx.person_id || null;
+                                    var dId = ctx.dealId || ctx.deal_id || null;
+                                    var name = ctx.personName || ctx.person_name || ctx.name || null;
+                                    if (phone) {
+                                        currentPersonId = pId;
+                                        currentDealId = dId;
+                                        setPhoneNumber(phone, name);
+                                    }
                                 }
                             }
-                        }
+                        });
+                        log('VISIBILITY listener registered');
+                    })
+                    .catch(function(err) {
+                        log('SDK init FAILED: ' + (err.message || err));
                     });
 
-                    // Get initial context
-                    try {
-                        sdk.execute('GET_METADATA').then(function(metadata) {
-                            log('Metadata: ' + JSON.stringify(metadata));
-                        }).catch(function(e) {
-                            log('Metadata fejl: ' + e.message);
-                        });
-                    } catch(e) {
-                        log('Metadata not available');
-                    }
-
-                }).catch(function(err) {
-                    log('SDK init fejl: ' + (err.message || err));
-                });
-
             } catch(e) {
-                log('SDK exception: ' + e.message);
+                log('EXCEPTION: ' + e.message + ' stack=' + (e.stack || '').substring(0, 200));
             }
         }
 
-        // Initiate call via backend API
         function initiateCall() {
             if (!currentPhone || callActive) return;
-
-            log('Starter opkald til ' + currentPhone);
+            log('Calling ' + currentPhone);
             callActive = true;
             document.body.classList.add('state-calling');
             callSeconds = 0;
@@ -300,26 +285,21 @@
                 callSeconds++;
                 callTimer.textContent = formatTime(callSeconds);
             }, 1000);
-
             var body = { toNumber: currentPhone };
             if (currentPersonId) body.personId = currentPersonId;
             if (currentDealId) body.dealId = currentDealId;
-
             fetch('/api/calls/initiate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
             })
-            .then(function(resp) { return resp.json(); })
+            .then(function(r) { return r.json(); })
             .then(function(data) {
-                log('Opkald svar: ' + JSON.stringify(data));
-                if (data.error) {
-                    showError('Fejl: ' + data.error);
-                    endCall();
-                }
+                log('Call response: ' + JSON.stringify(data));
+                if (data.error) { showError(data.error); endCall(); }
             })
             .catch(function(err) {
-                log('Opkald fejl: ' + err.message);
+                log('Call error: ' + err.message);
                 showError('Kunne ikke starte opkald');
                 endCall();
             });
@@ -328,33 +308,22 @@
         function endCall() {
             callActive = false;
             document.body.classList.remove('state-calling');
-            if (callTimerInterval) {
-                clearInterval(callTimerInterval);
-                callTimerInterval = null;
-            }
+            if (callTimerInterval) { clearInterval(callTimerInterval); callTimerInterval = null; }
         }
 
         function closeDialer() {
             if (sdk) {
-                try {
-                    sdk.execute('HIDE_FLOATING_WINDOW');
-                } catch(e) {
-                    log('Kunne ikke lukke: ' + e.message);
-                }
+                try { sdk.execute('HIDE_FLOATING_WINDOW'); }
+                catch(e) { log('Hide error: ' + e.message); }
             }
         }
 
-        // Event listeners
         btnCall.addEventListener('click', initiateCall);
         btnHangup.addEventListener('click', endCall);
         btnClose.addEventListener('click', closeDialer);
 
-        // Initialize when page loads
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initSDK);
-        } else {
-            initSDK();
-        }
+        log('Page loaded, starting SDK init...');
+        initSDK();
     </script>
 </body>
 </html>
