@@ -86,7 +86,7 @@
         function log(msg) {
             console.log('[ZD] ' + msg);
             debugLines.push(msg);
-            if (debugLines.length > 5) debugLines.shift();
+            if (debugLines.length > 6) debugLines.shift();
             debugEl.textContent = debugLines.join(' | ');
         }
 
@@ -101,40 +101,64 @@
             return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
         }
 
+        function setPhone(phone, name, source) {
+            if (!phone) return;
+            phoneInput.value = phone;
+            btnCall.disabled = false;
+            statusText.textContent = 'Klar til at ringe';
+            if (name) { personBanner.textContent = name; personBanner.style.display = 'block'; }
+            log((source||'') + ': ' + phone);
+        }
+
         function clearDialer() {
             if (callActive) return;
             phoneInput.value = '';
             btnCall.disabled = true;
             statusText.textContent = 'Venter p&#229; opkald...';
             personBanner.style.display = 'none';
-            currentPersonId = null;
-            currentDealId = null;
+            currentPersonId = null; currentDealId = null;
         }
 
-        function setPhone(phone, name, source) {
-            phoneInput.value = phone || '';
-            btnCall.disabled = !phone;
-            statusText.textContent = phone ? 'Klar til at ringe' : 'Venter p&#229; opkald...';
-            if (name) { personBanner.textContent = name; personBanner.style.display = 'block'; }
-            else { personBanner.style.display = 'none'; }
-            log((source || '') + ': ' + (phone || 'intet nummer'));
+        // --- Metode 1: URL query parameter (prim&#230;r metode) ---
+        // Pipedrive sender phoneNumber som ?selectedPhone=xxx eller ?phone=xxx
+        function readFromURL() {
+            var params = new URLSearchParams(window.location.search);
+            var phone = params.get('selectedPhone') || params.get('phone') ||
+                        params.get('phoneNumber') || params.get('phone_number') ||
+                        params.get('caller') || null;
+            var name  = params.get('name') || params.get('personName') || null;
+            var pid   = params.get('personId') || params.get('person_id') || null;
+            var did   = params.get('dealId') || params.get('deal_id') || null;
+            log('URL params: ' + window.location.search.substring(0, 100));
+            if (phone) {
+                currentPersonId = pid; currentDealId = did;
+                setPhone(phone, name, 'URL');
+                return true;
+            }
+            return false;
         }
 
-        function extractPhone(ctx) {
-            if (!ctx) return null;
-            // Pr&#248;v alle kendte feltnavne fra Pipedrive SDK
-            return ctx.phoneNumber || ctx.phone_number || ctx.phone ||
-                   ctx.number || ctx.callerNumber || ctx.caller_number || null;
-        }
-
-        function extractName(ctx) {
-            if (!ctx) return null;
-            return ctx.personName || ctx.person_name || ctx.name || ctx.contactName || null;
-        }
+        // --- Metode 2: postMessage (lyt p&#229; alle beskeder fra Pipedrive) ---
+        window.addEventListener('message', function(evt) {
+            if (!evt.data) return;
+            var d = evt.data;
+            log('MSG: ' + JSON.stringify(d).slice(0, 120));
+            // Pr&#248;v at udtr&#230;kke telefonnummer fra enhver besked
+            var phone = d.phoneNumber || d.phone_number || d.phone ||
+                        (d.context && (d.context.phoneNumber || d.context.phone)) ||
+                        (d.data && (d.data.phoneNumber || d.data.phone)) || null;
+            var name  = d.name || d.personName ||
+                        (d.context && d.context.personName) || null;
+            if (phone) {
+                currentPersonId = d.personId || (d.context && d.context.personId) || null;
+                currentDealId   = d.dealId   || (d.context && d.context.dealId)   || null;
+                setPhone(phone, name, 'MSG');
+            }
+        });
 
         phoneInput.addEventListener('input', function() {
             btnCall.disabled = !phoneInput.value.trim();
-            if (!phoneInput.value.trim()) { statusText.textContent = 'Venter p&#229; opkald...'; personBanner.style.display = 'none'; }
+            if (!phoneInput.value.trim()) statusText.textContent = 'Venter p&#229; opkald...';
         });
         btnClear.addEventListener('click', clearDialer);
 
@@ -143,8 +167,7 @@
             if (!number || callActive) return;
             callActive = true;
             document.body.classList.add('state-calling');
-            callSeconds = 0;
-            callTimer.textContent = '00:00';
+            callSeconds = 0; callTimer.textContent = '00:00';
             callTimerInterval = setInterval(function() { callSeconds++; callTimer.textContent = formatTime(callSeconds); }, 1000);
             var body = { toNumber: number };
             if (currentPersonId) body.personId = currentPersonId;
@@ -159,72 +182,44 @@
         function endCall() {
             callActive = false;
             document.body.classList.remove('state-calling');
-            clearInterval(callTimerInterval);
-            callTimerInterval = null;
+            clearInterval(callTimerInterval); callTimerInterval = null;
         }
 
         btnCall.addEventListener('click', initiateCall);
         btnHangup.addEventListener('click', endCall);
         phoneInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') initiateCall(); });
 
+        // --- SDK: kun til initialize (st&#248;rrelse) ---
+        // page_visibility_state er den eneste gyldige listen-event i v0.13.1
+        // Vi bruger den IKKE til phone - kun URL/postMessage
         function initSDK() {
             log('Init SDK...');
             var SDK = window.AppExtensionsSDK;
             if (!SDK) { log('SDK mangler'); return; }
-
             sdk = new SDK();
             sdk.initialize({ size: { height: 400, width: 350 } })
             .then(function() {
                 log('SDK OK');
-
-                // VISIBILITY: fyrer n&#229;r vinduet vises/skjules
-                // Ved &#229;bning via telefonnummer-klik: data.context indeholder phoneNumber
-                var visPromise = sdk.listen({
-                    event: 'VISIBILITY',
-                    callback: function(data) {
-                        // Log R&#197; data s&#229; vi kan debugge feltnavne
-                        var raw = JSON.stringify(data || {}).slice(0, 200);
-                        log('VIS: ' + raw);
-
-                        if (!data) return;
-
-                        if (!data.is_visible) {
-                            clearDialer();
-                            return;
-                        }
-
-                        // Pipedrive sender kontekst p&#229; forskellige m&#229;der - pr&#248;v alle
-                        var ctx = data.context || data.data || data || {};
-                        var phone = extractPhone(ctx);
-                        var name  = extractName(ctx);
-                        currentPersonId = ctx.personId || ctx.person_id || null;
-                        currentDealId   = ctx.dealId   || ctx.deal_id   || null;
-                        setPhone(phone, name, 'VIS');
-                    }
-                });
-                // F&#230;ng evt. rejected promise fra VISIBILITY
-                if (visPromise && typeof visPromise.catch === 'function') {
-                    visPromise.catch(function(e) { log('VIS fejl: ' + (e.message || e)); });
-                }
-
-                // CALLER_DATA som fallback - f&#230;ng b&#229;de sync throw og rejected promise
+                // L&#230;s URL params n&#229;r SDK er klar (iframe kan f&#229; params efter init)
+                readFromURL();
+                // page_visibility_state: fyrer n&#229;r browser-tab skifter fokus
+                // (ikke n&#248;dvendig for phone, men beh&#230;ldes til fremtidig brug)
                 try {
-                    var cdPromise = sdk.listen({
-                        event: 'CALLER_DATA',
+                    sdk.listen({
+                        event: 'page_visibility_state',
                         callback: function(data) {
-                            var phone = extractPhone(data);
-                            if (phone) setPhone(phone, extractName(data), 'CD');
+                            log('PVS: ' + JSON.stringify(data).slice(0, 80));
                         }
                     });
-                    if (cdPromise && typeof cdPromise.catch === 'function') {
-                        cdPromise.catch(function() { /* ikke underst&#248;ttet */ });
-                    }
-                } catch(e) { /* ikke underst&#248;ttet */ }
+                } catch(e) { /* ignorer */ }
             })
             .catch(function(err) {
                 log('SDK fejl: ' + (err.message || err));
             });
         }
+
+        // L&#230;s URL straks (f&#248;r SDK init)
+        readFromURL();
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', initSDK);
