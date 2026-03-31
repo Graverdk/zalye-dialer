@@ -7,68 +7,18 @@
     <script src="https://cdn.jsdelivr.net/npm/@pipedrive/app-extensions-sdk@0.13.1/dist/index.umd.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f8f9fa;
-            color: #333;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-        .header {
-            background: linear-gradient(135deg, #1a73e8, #0d47a1);
-            color: white;
-            padding: 12px 16px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; color: #333; min-height: 100vh; display: flex; flex-direction: column; }
+        .header { background: linear-gradient(135deg, #1a73e8, #0d47a1); color: white; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
         .header-icon { font-size: 20px; }
         .header-title { font-weight: 600; font-size: 15px; }
         .header-subtitle { font-size: 11px; opacity: 0.8; }
-        .content {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            padding: 16px;
-            gap: 12px;
-        }
-        .person-banner {
-            background: #e8f0fe;
-            border-radius: 8px;
-            padding: 8px 12px;
-            font-size: 13px;
-            color: #1a73e8;
-            font-weight: 500;
-            display: none;
-        }
+        .content { flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+        .person-banner { background: #e8f0fe; border-radius: 8px; padding: 8px 12px; font-size: 13px; color: #1a73e8; font-weight: 500; display: none; }
         .input-group { display: flex; gap: 8px; }
-        .phone-input {
-            flex: 1;
-            padding: 10px 12px;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 500;
-            color: #333;
-            outline: none;
-            transition: border-color 0.2s;
-        }
+        .phone-input { flex: 1; padding: 10px 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px; font-weight: 500; color: #333; outline: none; transition: border-color 0.2s; }
         .phone-input:focus { border-color: #1a73e8; }
         .phone-input::placeholder { color: #aaa; font-size: 14px; }
-        .btn {
-            padding: 10px 18px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            transition: all 0.2s;
-            white-space: nowrap;
-        }
+        .btn { padding: 10px 18px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s; white-space: nowrap; }
         .btn:hover { transform: translateY(-1px); }
         .btn:active { transform: translateY(0); }
         .btn-call { background: #4caf50; color: white; flex: 1; }
@@ -77,28 +27,12 @@
         .btn-hangup { background: #f44336; color: white; flex: 1; display: none; }
         .btn-hangup:hover { background: #e53935; }
         .btn-clear { background: #e0e0e0; color: #555; padding: 10px 12px; }
-        .btn-clear:hover { background: #d5d5d5; }
         .status-area { text-align: center; padding: 12px 0; }
         .status-icon { font-size: 40px; margin-bottom: 8px; }
         .status-text { font-size: 14px; font-weight: 500; color: #555; }
-        .call-timer {
-            font-size: 28px;
-            font-weight: 600;
-            font-variant-numeric: tabular-nums;
-            color: #333;
-            display: none;
-        }
-        .error-msg {
-            background: #fff3cd;
-            border: 1px solid #ffc107;
-            color: #856404;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 12px;
-            display: none;
-            text-align: center;
-        }
-        .debug { font-size: 10px; color: #999; font-family: monospace; word-break: break-all; max-height: 50px; overflow: hidden; }
+        .call-timer { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; color: #333; display: none; }
+        .error-msg { background: #fff3cd; border: 1px solid #ffc107; color: #856404; padding: 8px 12px; border-radius: 6px; font-size: 12px; display: none; text-align: center; }
+        .debug { font-size: 10px; color: #999; font-family: monospace; word-break: break-all; max-height: 60px; overflow: auto; line-height: 1.4; }
         body.state-calling .status-icon { display: none; }
         body.state-calling .call-timer { display: block; }
         body.state-calling .btn-call { display: none; }
@@ -135,12 +69,8 @@
     </div>
     <script>
         var sdk = null;
-        var callActive = false;
-        var callTimerInterval = null;
-        var callSeconds = 0;
-        var currentPersonId = null;
-        var currentDealId = null;
-        var activeCallUuid = null;
+        var callActive = false, callTimerInterval = null, callSeconds = 0;
+        var currentPersonId = null, currentDealId = null;
 
         var phoneInput   = document.getElementById('phoneInput');
         var btnCall      = document.getElementById('btnCall');
@@ -152,9 +82,12 @@
         var personBanner = document.getElementById('personBanner');
         var debugEl      = document.getElementById('debug');
 
+        var debugLines = [];
         function log(msg) {
-            console.log('[ZalyeDialer] ' + msg);
-            debugEl.textContent = msg;
+            console.log('[ZD] ' + msg);
+            debugLines.push(msg);
+            if (debugLines.length > 5) debugLines.shift();
+            debugEl.textContent = debugLines.join(' | ');
         }
 
         function showError(msg) {
@@ -168,9 +101,8 @@
             return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
         }
 
-        // Ryd dialeren (kaldes når vinduet skjules eller man skifter kontakt)
         function clearDialer() {
-            if (callActive) return; // Ryd ikke mens et opkald er i gang
+            if (callActive) return;
             phoneInput.value = '';
             btnCall.disabled = true;
             statusText.textContent = 'Venter p&#229; opkald...';
@@ -179,89 +111,56 @@
             currentDealId = null;
         }
 
-        // S&#230;t telefonnummer og kontaktnavn
         function setPhone(phone, name, source) {
             phoneInput.value = phone || '';
             btnCall.disabled = !phone;
             statusText.textContent = phone ? 'Klar til at ringe' : 'Venter p&#229; opkald...';
-            if (name) {
-                personBanner.textContent = name;
-                personBanner.style.display = 'block';
-            } else {
-                personBanner.style.display = 'none';
-            }
+            if (name) { personBanner.textContent = name; personBanner.style.display = 'block'; }
+            else { personBanner.style.display = 'none'; }
             log((source || '') + ': ' + (phone || 'intet nummer'));
         }
 
         function extractPhone(ctx) {
             if (!ctx) return null;
-            return ctx.phoneNumber || ctx.phone_number || ctx.phone || ctx.number || null;
+            // Pr&#248;v alle kendte feltnavne fra Pipedrive SDK
+            return ctx.phoneNumber || ctx.phone_number || ctx.phone ||
+                   ctx.number || ctx.callerNumber || ctx.caller_number || null;
         }
 
         function extractName(ctx) {
             if (!ctx) return null;
-            return ctx.personName || ctx.person_name || ctx.name || null;
+            return ctx.personName || ctx.person_name || ctx.name || ctx.contactName || null;
         }
 
         phoneInput.addEventListener('input', function() {
             btnCall.disabled = !phoneInput.value.trim();
-            if (!phoneInput.value.trim()) {
-                statusText.textContent = 'Venter p&#229; opkald...';
-                personBanner.style.display = 'none';
-            }
+            if (!phoneInput.value.trim()) { statusText.textContent = 'Venter p&#229; opkald...'; personBanner.style.display = 'none'; }
         });
-
         btnClear.addEventListener('click', clearDialer);
 
         function initiateCall() {
             var number = phoneInput.value.trim();
             if (!number || callActive) return;
-            log('Starter opkald til ' + number);
             callActive = true;
             document.body.classList.add('state-calling');
             callSeconds = 0;
             callTimer.textContent = '00:00';
-            callTimerInterval = setInterval(function() {
-                callSeconds++;
-                callTimer.textContent = formatTime(callSeconds);
-            }, 1000);
+            callTimerInterval = setInterval(function() { callSeconds++; callTimer.textContent = formatTime(callSeconds); }, 1000);
             var body = { toNumber: number };
             if (currentPersonId) body.personId = currentPersonId;
             if (currentDealId)   body.dealId   = currentDealId;
-            fetch('/api/calls/initiate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            })
-            .then(function(r) { return r.json(); })
-            .then(function(d) {
-                log('Svar: ' + JSON.stringify(d));
-                if (d.error) { showError('Fejl: ' + d.error); endCall(); }
-                if (d.callUuid) activeCallUuid = d.callUuid;
-            })
-            .catch(function(e) {
-                showError('Kunne ikke starte opkald: ' + e.message);
-                endCall();
-            });
+            log('Ringer: ' + number);
+            fetch('/api/calls/initiate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+                .then(function(r) { return r.json(); })
+                .then(function(d) { if (d.error) { showError(d.error); endCall(); } })
+                .catch(function(e) { showError(e.message); endCall(); });
         }
 
         function endCall() {
-            // Hvis vi har et aktivt opkald UUID, afslut det via API
-            if (activeCallUuid) {
-                fetch('/api/calls/' + activeCallUuid + '/hangup', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                }).catch(function() {});
-                activeCallUuid = null;
-            }
             callActive = false;
             document.body.classList.remove('state-calling');
             clearInterval(callTimerInterval);
             callTimerInterval = null;
-            statusText.textContent = 'Opkald afsluttet';
-            setTimeout(function() {
-                statusText.textContent = 'Venter p&#229; opkald...';
-            }, 2000);
         }
 
         btnCall.addEventListener('click', initiateCall);
@@ -269,60 +168,62 @@
         phoneInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') initiateCall(); });
 
         function initSDK() {
-            log('Initialiserer SDK...');
-            try {
-                var SDK = window.AppExtensionsSDK;
-                if (!SDK) { log('SDK ikke fundet'); return; }
-                sdk = new SDK();
-                sdk.initialize({ size: { height: 400, width: 350 } }).then(function() {
-                    log('SDK OK');
+            log('Init SDK...');
+            var SDK = window.AppExtensionsSDK;
+            if (!SDK) { log('SDK mangler'); return; }
 
-                    // VISIBILITY: fyrer n&#229;r vinduet vises/skjules
-                    // is_visible=true + context.phoneNumber = nyt nummer fra klik
-                    // is_visible=false = vinduet lukkes -> ryd
-                    sdk.listen({
-                        event: 'VISIBILITY',
+            sdk = new SDK();
+            sdk.initialize({ size: { height: 400, width: 350 } })
+            .then(function() {
+                log('SDK OK');
+
+                // VISIBILITY: fyrer n&#229;r vinduet vises/skjules
+                // Ved &#229;bning via telefonnummer-klik: data.context indeholder phoneNumber
+                var visPromise = sdk.listen({
+                    event: 'VISIBILITY',
+                    callback: function(data) {
+                        // Log R&#197; data s&#229; vi kan debugge feltnavne
+                        var raw = JSON.stringify(data || {}).slice(0, 200);
+                        log('VIS: ' + raw);
+
+                        if (!data) return;
+
+                        if (!data.is_visible) {
+                            clearDialer();
+                            return;
+                        }
+
+                        // Pipedrive sender kontekst p&#229; forskellige m&#229;der - pr&#248;v alle
+                        var ctx = data.context || data.data || data || {};
+                        var phone = extractPhone(ctx);
+                        var name  = extractName(ctx);
+                        currentPersonId = ctx.personId || ctx.person_id || null;
+                        currentDealId   = ctx.dealId   || ctx.deal_id   || null;
+                        setPhone(phone, name, 'VIS');
+                    }
+                });
+                // F&#230;ng evt. rejected promise fra VISIBILITY
+                if (visPromise && typeof visPromise.catch === 'function') {
+                    visPromise.catch(function(e) { log('VIS fejl: ' + (e.message || e)); });
+                }
+
+                // CALLER_DATA som fallback - f&#230;ng b&#229;de sync throw og rejected promise
+                try {
+                    var cdPromise = sdk.listen({
+                        event: 'CALLER_DATA',
                         callback: function(data) {
-                            log('VISIBILITY is_visible=' + (data && data.is_visible) + ' ctx=' + JSON.stringify((data && data.context) || {}).slice(0, 80));
-
-                            if (!data) return;
-
-                            if (!data.is_visible) {
-                                // Vinduet er skjult -> ryd s&#229; n&#230;ste &#229;bning starter frisk
-                                clearDialer();
-                                return;
-                            }
-
-                            // Vinduet er synligt -> opdater ALTID (ogs&#229; selvom intet nummer)
-                            var ctx = data.context || {};
-                            var phone = extractPhone(ctx);
-                            var name  = extractName(ctx);
-                            currentPersonId = ctx.personId || ctx.person_id || null;
-                            currentDealId   = ctx.dealId   || ctx.deal_id   || null;
-
-                            // S&#230;t nummer (eller ryd hvis intet nummer - undg&#229;r gammelt nummer h&#230;nger)
-                            setPhone(phone, name, 'VISIBILITY');
+                            var phone = extractPhone(data);
+                            if (phone) setPhone(phone, extractName(data), 'CD');
                         }
                     });
-
-                    // CALLER_DATA som fallback
-                    try {
-                        sdk.listen({
-                            event: 'CALLER_DATA',
-                            callback: function(data) {
-                                log('CALLER_DATA: ' + JSON.stringify(data).slice(0, 100));
-                                var phone = extractPhone(data);
-                                if (phone) setPhone(phone, extractName(data), 'CALLER_DATA');
-                            }
-                        });
-                    } catch(e) { /* ikke tilg&#230;ngelig */ }
-
-                }).catch(function(err) {
-                    log('SDK fejl: ' + (err.message || err));
-                });
-            } catch(e) {
-                log('SDK exception: ' + e.message);
-            }
+                    if (cdPromise && typeof cdPromise.catch === 'function') {
+                        cdPromise.catch(function() { /* ikke underst&#248;ttet */ });
+                    }
+                } catch(e) { /* ikke underst&#248;ttet */ }
+            })
+            .catch(function(err) {
+                log('SDK fejl: ' + (err.message || err));
+            });
         }
 
         if (document.readyState === 'loading') {
