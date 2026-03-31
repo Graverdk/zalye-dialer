@@ -1,391 +1,342 @@
 <!DOCTYPE html>
 <html lang="da">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Zalye Dialer</title>
-  <script src="https://unpkg.com/@pipedrive/app-extensions-sdk@1/dist/bundle.js"></script>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #ffffff;
-      color: #1a1a2e;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-
-    /* Header */
-    .header {
-      background: linear-gradient(135deg, #1a73e8, #0d47a1);
-      color: white;
-      padding: 16px 20px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .header-logo { font-size: 20px; }
-    .header h1 { font-size: 15px; font-weight: 600; }
-    .header p  { font-size: 11px; opacity: 0.8; }
-
-    /* Kontakt-sektion */
-    .contact-section {
-      padding: 20px;
-      border-bottom: 1px solid #f0f0f0;
-      text-align: center;
-    }
-    .contact-avatar {
-      width: 56px; height: 56px;
-      background: #e8f0fe;
-      border-radius: 50%;
-      margin: 0 auto 10px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 22px; color: #1a73e8;
-    }
-    .contact-name { font-size: 16px; font-weight: 600; color: #1a1a2e; }
-    .contact-phone {
-      font-size: 14px; color: #666;
-      margin-top: 4px;
-      letter-spacing: 0.5px;
-    }
-
-    /* Opkaldsstatus */
-    .status-section {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      gap: 12px;
-    }
-
-    .status-icon {
-      width: 72px; height: 72px;
-      border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 28px;
-      transition: all 0.3s ease;
-    }
-    .status-icon.idle     { background: #e8f5e9; }
-    .status-icon.ringing  { background: #fff3e0; animation: pulse 1s infinite; }
-    .status-icon.active   { background: #e8f5e9; }
-    .status-icon.ended    { background: #fce4ec; }
-    .status-icon.error    { background: #fce4ec; }
-    .status-icon.processing { background: #e3f2fd; }
-
-    @keyframes pulse {
-      0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,152,0,0.4); }
-      50%       { transform: scale(1.05); box-shadow: 0 0 0 12px rgba(255,152,0,0); }
-    }
-
-    .status-text { font-size: 14px; font-weight: 500; color: #444; }
-    .timer { font-size: 28px; font-weight: 300; color: #1a73e8; letter-spacing: 2px; font-variant-numeric: tabular-nums; }
-
-    /* Knapper */
-    .btn-row {
-      padding: 16px 20px;
-      display: flex;
-      gap: 10px;
-    }
-
-    .btn {
-      flex: 1;
-      padding: 12px;
-      border: none;
-      border-radius: 10px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: flex; align-items: center; justify-content: center; gap: 6px;
-    }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn-call  { background: #34a853; color: white; }
-    .btn-call:hover:not(:disabled)  { background: #2d9144; }
-    .btn-end   { background: #ea4335; color: white; }
-    .btn-end:hover:not(:disabled)   { background: #d33426; }
-    .btn-close { background: #f5f5f5; color: #444; }
-    .btn-close:hover:not(:disabled) { background: #e8e8e8; }
-
-    /* Besked-boks */
-    .message-box {
-      margin: 0 20px 16px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 12px;
-      line-height: 1.5;
-      display: none;
-    }
-    .message-box.info    { background: #e8f0fe; color: #1a73e8; display: block; }
-    .message-box.success { background: #e8f5e9; color: #1e7e34; display: block; }
-    .message-box.error   { background: #fce4ec; color: #c62828; display: block; }
-
-    /* Loading spinner */
-    .spinner {
-      width: 18px; height: 18px;
-      border: 2px solid rgba(255,255,255,0.3);
-      border-top-color: white;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      display: inline-block;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-  </style>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zalye Dialer</title>
+    <script src="https://unpkg.com/@pipedrive/app-extensions-sdk@1/dist/bundle.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #ffffff;
+            color: #1a1a2e;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a73e8, #0d47a1);
+            color: white;
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .header-logo { font-size: 20px; }
+        .header h1 { font-size: 15px; font-weight: 600; }
+        .header p { font-size: 11px; opacity: 0.8; }
+        .contact-section {
+            padding: 20px;
+            border-bottom: 1px solid #f0f0f0;
+            text-align: center;
+        }
+        .contact-avatar {
+            width: 56px; height: 56px;
+            background: #e8f0fe;
+            border-radius: 50%;
+            margin: 0 auto 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            color: #1a73e8;
+        }
+        .contact-name { font-size: 16px; font-weight: 600; color: #1a1a2e; }
+        .contact-phone { font-size: 14px; color: #666; margin-top: 4px; letter-spacing: 0.5px; }
+        .status-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            gap: 12px;
+        }
+        .status-icon {
+            width: 72px; height: 72px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            transition: all 0.3s ease;
+        }
+        .status-icon.idle { background: #e8f5e9; }
+        .status-icon.ringing { background: #fff3e0; animation: pulse 1s infinite; }
+        .status-icon.active { background: #e8f5e9; }
+        .status-icon.ended { background: #fce4ec; }
+        .status-icon.error { background: #fce4ec; }
+        .status-icon.processing { background: #e3f2fd; }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,152,0,0.4); }
+            50% { transform: scale(1.05); box-shadow: 0 0 0 12px rgba(255,152,0,0); }
+        }
+        .status-text { font-size: 14px; font-weight: 500; color: #444; }
+        .timer {
+            font-size: 28px; font-weight: 300; color: #1a73e8;
+            letter-spacing: 2px; font-variant-numeric: tabular-nums;
+        }
+        .btn-row { padding: 16px 20px; display: flex; gap: 10px; }
+        .btn {
+            flex: 1; padding: 12px; border: none; border-radius: 10px;
+            font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: all 0.2s;
+            display: flex; align-items: center; justify-content: center; gap: 6px;
+        }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-call { background: #34a853; color: white; }
+        .btn-call:hover:not(:disabled) { background: #2d9144; }
+        .btn-end { background: #ea4335; color: white; }
+        .btn-end:hover:not(:disabled) { background: #d33426; }
+        .btn-close { background: #f5f5f5; color: #444; }
+        .btn-close:hover:not(:disabled) { background: #e8e8e8; }
+        .message-box {
+            margin: 0 20px 16px;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 12px;
+            line-height: 1.5;
+            display: none;
+        }
+        .message-box.info { background: #e8f0fe; color: #1a73e8; display: block; }
+        .message-box.success { background: #e8f5e9; color: #1e7e34; display: block; }
+        .message-box.error { background: #fce4ec; color: #c62828; display: block; }
+        .spinner {
+            width: 18px; height: 18px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white; border-radius: 50%;
+            animation: spin 0.8s linear infinite; display: inline-block;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
 </head>
 <body>
-
-  <div class="header">
-    <div class="header-logo">📞</div>
-    <div>
-      <h1>Zalye Dialer</h1>
-      <p>Via Relatel</p>
+    <div class="header">
+        <div class="header-logo">📞</div>
+        <div>
+            <h1>Zalye Dialer</h1>
+            <p>Via Relatel</p>
+        </div>
     </div>
-  </div>
 
-  <div class="contact-section">
-    <div class="contact-avatar" id="contact-avatar">👤</div>
-    <div class="contact-name" id="contact-name">Indlæser...</div>
-    <div class="contact-phone" id="contact-phone">—</div>
-  </div>
+    <div class="contact-section">
+        <div class="contact-avatar" id="contact-avatar">👤</div>
+        <div class="contact-name" id="contact-name">Venter på opkald...</div>
+        <div class="contact-phone" id="contact-phone">Klik på et telefonnummer i Pipedrive</div>
+    </div>
 
-  <div class="status-section">
-    <div class="status-icon idle" id="status-icon">📞</div>
-    <div class="status-text" id="status-text">Klar til at ringe</div>
-    <div class="timer" id="timer" style="display:none">0:00</div>
-  </div>
+    <div class="status-section">
+        <div class="status-icon idle" id="status-icon">📞</div>
+        <div class="status-text" id="status-text">Klar til at ringe</div>
+        <div class="timer" id="timer" style="display:none">0:00</div>
+    </div>
 
-  <div class="message-box" id="message-box"></div>
+    <div class="message-box" id="message-box"></div>
 
-  <div class="btn-row" id="btn-row">
-    <button class="btn btn-call" id="btn-call" onclick="startCall()">
-      📞 Ring op
-    </button>
-    <button class="btn btn-close" id="btn-close" onclick="closeDialer()">
-      ✕ Luk
-    </button>
-  </div>
+    <div class="btn-row" id="btn-row">
+        <button class="btn btn-call" id="btn-call" onclick="startCall()" disabled>
+            📞 Ring op
+        </button>
+        <button class="btn btn-close" id="btn-close" onclick="closeDialer()">
+            ✕ Luk
+        </button>
+    </div>
 
-  <script>
-    // ============================================================
-    // State
-    // ============================================================
-    let sdk = null;
-    let phoneNumber = '';
-    let personId = null;
-    let dealId = null;
-    let contactName = 'Ukendt kontakt';
-    let callState = 'idle'; // idle | ringing | active | ended | processing | error
-    let timerInterval = null;
-    let timerSec = 0;
-    let backendUrl = '';
+    <script>
+        let sdk = null;
+        let phoneNumber = '';
+        let personId = null;
+        let dealId = null;
+        let contactName = 'Ukendt kontakt';
+        let callState = 'idle';
+        let timerInterval = null;
+        let timerSec = 0;
+        let backendUrl = '';
 
-    // ============================================================
-    // Init Pipedrive SDK
-    // ============================================================
-    async function init() {
-      try {
-        sdk = new AppExtensionsSDK();
-        await sdk.initialize({ size: { width: 340, height: 440 } });
+        async function init() {
+            try {
+                console.log('[Zalye Dialer] Initialiserer SDK...');
+                sdk = new AppExtensionsSDK();
+                await sdk.initialize({ size: { width: 340, height: 440 } });
+                console.log('[Zalye Dialer] SDK initialiseret!');
 
-        const ctx = await sdk.getContext();
-        console.log('Pipedrive context:', JSON.stringify(ctx, null, 2));
+                backendUrl = window.location.origin;
 
-        // Hent telefonnummer og kontaktoplysninger fra context
-        // Pipedrive sender disse data når en calling-app åbnes
-        const data = ctx.data || {};
-        phoneNumber  = data.phone || data.phoneNumber || data.number || '';
-        personId     = data.person?.id || data.personId || null;
-        dealId       = data.deal?.id || data.dealId || null;
-        contactName  = data.person?.name || data.name || 'Ukendt kontakt';
+                const ctx = await sdk.getContext();
+                console.log('[Zalye Dialer] Initial context:', JSON.stringify(ctx, null, 2));
 
-        // Backend URL: hent fra siden der serverer denne HTML
-        backendUrl = window.location.origin;
+                extractPhoneData(ctx);
 
-        // Vis kontaktoplysninger
-        updateContactUI();
+                // VIGTIG: Lyt efter VISIBILITY events
+                // Når bruger klikker på et telefonnummer i Pipedrive,
+                // sender Pipedrive SHOW_FLOATING_WINDOW med context-data.
+                sdk.listen(Event.VISIBILITY, ({ error, data }) => {
+                    if (error) {
+                        console.error('[Zalye Dialer] Visibility event fejl:', error);
+                        return;
+                    }
+                    console.log('[Zalye Dialer] Visibility event:', JSON.stringify(data, null, 2));
 
-      } catch (err) {
-        console.error('SDK init fejl:', err);
-        // Fallback: prøv at hente URL-parametre (til test)
-        const params = new URLSearchParams(window.location.search);
-        phoneNumber = params.get('phone') || '';
-        personId    = params.get('personId') || null;
-        dealId      = params.get('dealId') || null;
-        contactName = params.get('name') || 'Ukendt kontakt';
-        backendUrl  = window.location.origin;
-        updateContactUI();
-      }
-    }
+                    if (data && data.is_visible && data.context) {
+                        console.log('[Zalye Dialer] Modtog context fra visibility:', JSON.stringify(data.context, null, 2));
+                        handleIncomingPhoneData(data.context);
+                    }
+                });
 
-    // ============================================================
-    // Opdater UI med kontaktoplysninger
-    // ============================================================
-    function updateContactUI() {
-      document.getElementById('contact-name').textContent = contactName || 'Ukendt';
-      document.getElementById('contact-phone').textContent = formatPhone(phoneNumber) || '—';
-      document.getElementById('contact-avatar').textContent =
-        contactName ? contactName.charAt(0).toUpperCase() : '👤';
-    }
+                console.log('[Zalye Dialer] Visibility listener registreret');
 
-    function formatPhone(num) {
-      if (!num) return '';
-      const n = num.replace(/^(\+|00)45/, '').replace(/\D/g, '');
-      if (n.length === 8) return n.replace(/(\d{2})(\d{2})(\d{2})(\d{2})/, '$1 $2 $3 $4');
-      return num;
-    }
-
-    // ============================================================
-    // Start opkald
-    // ============================================================
-    async function startCall() {
-      if (!phoneNumber) {
-        showMessage('Intet telefonnummer fundet', 'error');
-        return;
-      }
-
-      setCallState('ringing');
-
-      try {
-        const res = await fetch(`${backendUrl}/api/calls/initiate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ toNumber: phoneNumber, personId, dealId }),
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data.error || 'Opkald fejlede');
+            } catch (err) {
+                console.error('[Zalye Dialer] SDK init fejl:', err);
+                const params = new URLSearchParams(window.location.search);
+                phoneNumber = params.get('phone') || '';
+                personId = params.get('personId') || null;
+                dealId = params.get('dealId') || null;
+                contactName = params.get('name') || 'Ukendt kontakt';
+                backendUrl = window.location.origin;
+                if (phoneNumber) {
+                    updateContactUI();
+                    document.getElementById('btn-call').disabled = false;
+                }
+            }
         }
 
-        // Opkaldet er initieret - Relatel ringer nu til medarbejderens telefon
-        showMessage('Din telefon ringer nu. Svar for at forbinde til kunden.', 'info');
-        setTimeout(() => setCallState('active'), 3000);
-
-      } catch (err) {
-        console.error('Opkaldsfejl:', err);
-        showMessage(`Fejl: ${err.message}`, 'error');
-        setCallState('error');
-      }
-    }
-
-    // ============================================================
-    // Afslut opkald (UI-side - det rigtige opkald afsluttes i telefonen)
-    // ============================================================
-    function endCall() {
-      setCallState('processing');
-      showMessage('Opkaldet er afsluttet. Transskription og resumé behandles automatisk og vises i Opkald-panelet.', 'success');
-    }
-
-    // ============================================================
-    // Luk dialeren
-    // ============================================================
-    async function closeDialer() {
-      if (sdk) {
-        try {
-          // Forsøg at lukke floating window via SDK
-          await sdk.execute('CLOSE_MODAL', {});
-        } catch {
-          // Fallback: bare luk vinduet
-          window.close();
+        function extractPhoneData(ctx) {
+            if (!ctx) return;
+            const data = ctx.data || ctx;
+            const phone = data.phone || data.phoneNumber || data.number ||
+                          data.phone_number || data.selectedPhone || '';
+            if (phone) {
+                phoneNumber = phone;
+                personId = data.person?.id || data.personId || data.person_id || null;
+                dealId = data.deal?.id || data.dealId || data.deal_id || null;
+                contactName = data.person?.name || data.name || data.personName || 'Ukendt kontakt';
+                updateContactUI();
+                document.getElementById('btn-call').disabled = false;
+                console.log('[Zalye Dialer] Telefonnummer fundet i context:', phoneNumber);
+            }
         }
-      } else {
-        window.close();
-      }
-    }
 
-    // ============================================================
-    // Skift tilstand
-    // ============================================================
-    function setCallState(state) {
-      callState = state;
-      const icon  = document.getElementById('status-icon');
-      const text  = document.getElementById('status-text');
-      const timer = document.getElementById('timer');
-      const btnRow = document.getElementById('btn-row');
+        function handleIncomingPhoneData(context) {
+            if (!context) return;
+            const phone = context.phone || context.phoneNumber || context.number ||
+                          context.phone_number || context.selectedPhone ||
+                          context.phone_number_value || '';
+            if (phone) {
+                if (callState !== 'idle') {
+                    clearInterval(timerInterval);
+                    setCallState('idle');
+                }
+                phoneNumber = phone;
+                personId = context.person?.id || context.personId || context.person_id || null;
+                dealId = context.deal?.id || context.dealId || context.deal_id || null;
+                contactName = context.person?.name || context.name || context.personName || 'Ukendt kontakt';
+                updateContactUI();
+                document.getElementById('btn-call').disabled = false;
+                showMessage('Klar til at ringe til ' + formatPhone(phoneNumber), 'info');
+                console.log('[Zalye Dialer] Nyt telefonnummer modtaget:', phoneNumber, 'Kontakt:', contactName);
+            }
+        }
 
-      // Ryd timer
-      clearInterval(timerInterval);
+        function updateContactUI() {
+            document.getElementById('contact-name').textContent = contactName || 'Ukendt';
+            document.getElementById('contact-phone').textContent = formatPhone(phoneNumber) || '—';
+            document.getElementById('contact-avatar').textContent = contactName && contactName !== 'Ukendt kontakt'
+                ? contactName.charAt(0).toUpperCase() : '👤';
+        }
 
-      switch (state) {
-        case 'ringing':
-          icon.className = 'status-icon ringing';
-          icon.textContent = '📲';
-          text.textContent = 'Ringer...';
-          timer.style.display = 'none';
-          btnRow.innerHTML = `
-            <button class="btn btn-end" onclick="endCall()">📵 Afslut</button>
-          `;
-          break;
+        function formatPhone(num) {
+            if (!num) return '';
+            const n = num.replace(/^(\+|00)45/, '').replace(/\D/g, '');
+            if (n.length === 8) return n.replace(/(\d{2})(\d{2})(\d{2})(\d{2})/, '$1 $2 $3 $4');
+            return num;
+        }
 
-        case 'active':
-          icon.className = 'status-icon active';
-          icon.textContent = '🔊';
-          text.textContent = 'Forbundet';
-          timerSec = 0;
-          timer.style.display = 'block';
-          timer.textContent = '0:00';
-          timerInterval = setInterval(() => {
-            timerSec++;
-            const m = Math.floor(timerSec / 60);
-            const s = String(timerSec % 60).padStart(2, '0');
-            timer.textContent = `${m}:${s}`;
-          }, 1000);
-          btnRow.innerHTML = `
-            <button class="btn btn-end" onclick="endCall()">📵 Afslut opkald</button>
-          `;
-          break;
+        async function startCall() {
+            if (!phoneNumber) { showMessage('Intet telefonnummer fundet', 'error'); return; }
+            if (sdk) { try { await sdk.execute(Command.SET_FOCUS_MODE, true); } catch(e) {} }
+            setCallState('ringing');
+            try {
+                const res = await fetch(backendUrl + '/api/calls/initiate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ toNumber: phoneNumber, personId, dealId }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Opkald fejlede');
+                showMessage('Din telefon ringer nu. Svar for at forbinde til kunden.', 'info');
+                setTimeout(() => setCallState('active'), 3000);
+            } catch (err) {
+                console.error('[Zalye Dialer] Opkaldsfejl:', err);
+                showMessage('Fejl: ' + err.message, 'error');
+                setCallState('error');
+                if (sdk) { try { await sdk.execute(Command.SET_FOCUS_MODE, false); } catch(e) {} }
+            }
+        }
 
-        case 'ended':
-        case 'processing':
-          icon.className = 'status-icon processing';
-          icon.textContent = '⚙️';
-          text.textContent = 'Behandler optagelse...';
-          timer.style.display = 'none';
-          btnRow.innerHTML = `
-            <button class="btn btn-close" onclick="closeDialer()">✕ Luk</button>
-          `;
-          break;
+        async function endCall() {
+            if (sdk) { try { await sdk.execute(Command.SET_FOCUS_MODE, false); } catch(e) {} }
+            setCallState('processing');
+            showMessage('Opkaldet er afsluttet. Transskription og resumé behandles automatisk.', 'success');
+        }
 
-        case 'error':
-          icon.className = 'status-icon error';
-          icon.textContent = '❌';
-          text.textContent = 'Opkald fejlede';
-          timer.style.display = 'none';
-          btnRow.innerHTML = `
-            <button class="btn btn-call" onclick="startCall()">🔄 Prøv igen</button>
-            <button class="btn btn-close" onclick="closeDialer()">✕ Luk</button>
-          `;
-          break;
+        async function closeDialer() {
+            if (sdk) {
+                try { await sdk.execute(Command.HIDE_FLOATING_WINDOW, {}); } catch {
+                    try { await sdk.execute(Command.CLOSE_MODAL, {}); } catch { window.close(); }
+                }
+            } else { window.close(); }
+        }
 
-        default: // idle
-          icon.className = 'status-icon idle';
-          icon.textContent = '📞';
-          text.textContent = 'Klar til at ringe';
-          timer.style.display = 'none';
-          btnRow.innerHTML = `
-            <button class="btn btn-call" onclick="startCall()">📞 Ring op</button>
-            <button class="btn btn-close" onclick="closeDialer()">✕ Luk</button>
-          `;
-          break;
-      }
-    }
+        function setCallState(state) {
+            callState = state;
+            const icon = document.getElementById('status-icon');
+            const text = document.getElementById('status-text');
+            const timer = document.getElementById('timer');
+            const btnRow = document.getElementById('btn-row');
+            clearInterval(timerInterval);
+            switch (state) {
+                case 'ringing':
+                    icon.className = 'status-icon ringing'; icon.textContent = '📲';
+                    text.textContent = 'Ringer...'; timer.style.display = 'none';
+                    btnRow.innerHTML = '<button class="btn btn-end" onclick="endCall()">📵 Afslut</button>';
+                    break;
+                case 'active':
+                    icon.className = 'status-icon active'; icon.textContent = '🔊';
+                    text.textContent = 'Forbundet'; timerSec = 0;
+                    timer.style.display = 'block'; timer.textContent = '0:00';
+                    timerInterval = setInterval(() => {
+                        timerSec++;
+                        timer.textContent = Math.floor(timerSec/60) + ':' + String(timerSec%60).padStart(2,'0');
+                    }, 1000);
+                    btnRow.innerHTML = '<button class="btn btn-end" onclick="endCall()">📵 Afslut opkald</button>';
+                    break;
+                case 'ended': case 'processing':
+                    icon.className = 'status-icon processing'; icon.textContent = '⚙️';
+                    text.textContent = 'Behandler optagelse...'; timer.style.display = 'none';
+                    btnRow.innerHTML = '<button class="btn btn-close" onclick="closeDialer()">✕ Luk</button>';
+                    break;
+                case 'error':
+                    icon.className = 'status-icon error'; icon.textContent = '❌';
+                    text.textContent = 'Opkald fejlede'; timer.style.display = 'none';
+                    btnRow.innerHTML = '<button class="btn btn-call" onclick="startCall()">🔄 Prøv igen</button><button class="btn btn-close" onclick="closeDialer()">✕ Luk</button>';
+                    break;
+                default:
+                    icon.className = 'status-icon idle'; icon.textContent = '📞';
+                    text.textContent = 'Klar til at ringe'; timer.style.display = 'none';
+                    btnRow.innerHTML = '<button class="btn btn-call" id="btn-call" onclick="startCall()" ' + (phoneNumber ? '' : 'disabled') + '>📞 Ring op</button><button class="btn btn-close" onclick="closeDialer()">✕ Luk</button>';
+                    break;
+            }
+        }
 
-    // ============================================================
-    // Vis besked
-    // ============================================================
-    function showMessage(text, type = 'info') {
-      const box = document.getElementById('message-box');
-      box.className = `message-box ${type}`;
-      box.textContent = text;
-    }
+        function showMessage(text, type) {
+            const box = document.getElementById('message-box');
+            box.className = 'message-box ' + (type || 'info');
+            box.textContent = text;
+        }
 
-    // Start!
-    init();
-  </script>
+        init();
+    </script>
 </body>
 </html>
