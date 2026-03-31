@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Opkald — Zalye</title>
+  <script src="https://unpkg.com/@pipedrive/app-extensions-sdk@1/dist/bundle.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #fafafa;
+      color: #1a1a2e;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    /* Top-knap: Ring op */
+    .dial-bar {
+      background: white;
+      border-bottom: 1px solid #e8e8e8;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dial-input {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 13px;
+      outline: none;
+      color: #333;
+    }
+    .dial-input:focus { border-color: #1a73e8; }
+    .btn-dial {
+      padding: 8px 14px;
+      background: #1a73e8;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .btn-dial:hover { background: #1557b0; }
+    .btn-dial:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Filter-tabs */
+    .filter-tabs {
+      display: flex;
+      background: white;
+      border-bottom: 1px solid #e8e8e8;
+      padding: 0 16px;
+    }
+    .tab {
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #888;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+    .tab.active { color: #1a73e8; border-bottom-color: #1a73e8; }
+    .tab:hover  { color: #555; }
+
+    /* Opkalds-liste */
+    .call-list { padding: 8px 0; }
+
+    .call-item {
+      background: white;
+      margin: 6px 12px;
+      border-radius: 10px;
+      border: 1px solid #e8e8e8;
+      overflow: hidden;
+      cursor: pointer;
+      transition: box-shadow 0.2s;
+    }
+    .call-item:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .call-item.expanded { box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+
+    .call-header {
+      display: flex;
+      align-items: center;
+      padding: 10px 14px;
+      gap: 10px;
+    }
+
+    .call-dir-icon {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .call-dir-icon.outgoing { background: #e8f0fe; }
+    .call-dir-icon.incoming { background: #e8f5e9; }
+
+    .call-meta { flex: 1; min-width: 0; }
+    .call-phone { font-weight: 600; font-size: 13px; }
+    .call-info  { font-size: 11px; color: #888; margin-top: 2px; }
+
+    .call-status {
+      font-size: 10px;
+      padding: 3px 7px;
+      border-radius: 20px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .call-status.done       { background: #e8f5e9; color: #1e7e34; }
+    .call-status.processing { background: #fff3e0; color: #e65100; }
+    .call-status.pending    { background: #f5f5f5; color: #888; }
+    .call-status.failed     { background: #fce4ec; color: #c62828; }
+
+    /* Udfoldet indhold */
+    .call-detail {
+      border-top: 1px solid #f0f0f0;
+      padding: 14px;
+      display: none;
+    }
+    .call-item.expanded .call-detail { display: block; }
+
+    .detail-section { margin-bottom: 12px; }
+    .detail-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #888;
+      margin-bottom: 5px;
+    }
+    .detail-text { font-size: 12px; line-height: 1.6; color: #333; }
+
+    .action-point {
+      display: flex; align-items: flex-start; gap: 7px;
+      padding: 5px 0;
+      font-size: 12px;
+      color: #333;
+      border-bottom: 1px solid #f5f5f5;
+    }
+    .action-point:last-child { border-bottom: none; }
+    .action-point::before {
+      content: '→';
+      color: #1a73e8;
+      font-weight: bold;
+      flex-shrink: 0;
+    }
+
+    .topics-row {
+      display: flex; flex-wrap: wrap; gap: 5px;
+    }
+    .topic-chip {
+      background: #e8f0fe;
+      color: #1a73e8;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+    }
+
+    /* Transskription */
+    .transcript-toggle {
+      display: flex; align-items: center; gap: 5px;
+      color: #1a73e8;
+      font-size: 11px;
+      cursor: pointer;
+      margin-top: 8px;
+      padding: 5px 0;
+    }
+    .transcript-toggle:hover { text-decoration: underline; }
+    .transcript-text {
+      font-size: 11px;
+      color: #666;
+      line-height: 1.7;
+      background: #f8f9fa;
+      border-radius: 6px;
+      padding: 10px;
+      margin-top: 6px;
+      max-height: 200px;
+      overflow-y: auto;
+      display: none;
+      white-space: pre-wrap;
+    }
+
+    /* Tom liste */
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #aaa;
+    }
+    .empty-state .icon { font-size: 36px; margin-bottom: 10px; }
+    .empty-state p { font-size: 13px; }
+
+    /* Loading */
+    .loading {
+      text-align: center;
+      padding: 30px;
+      color: #888;
+    }
+    .spinner {
+      width: 24px; height: 24px;
+      border: 3px solid #e8e8e8;
+      border-top-color: #1a73e8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 10px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Toast notification */
+    .toast {
+      position: fixed;
+      bottom: 16px; left: 50%;
+      transform: translateX(-50%);
+      background: #333;
+      color: white;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 12px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <!-- Ring op-bjælke -->
+  <div class="dial-bar">
+    <input class="dial-input" id="dial-input" type="tel"
+      placeholder="Nummer eller søg..." autocomplete="off" />
+    <button class="btn-dial" id="btn-dial" onclick="dialNumber()">
+      📞 Ring op
+    </button>
+  </div>
+
+  <!-- Filter-tabs -->
+  <div class="filter-tabs">
+    <div class="tab active" data-filter="all"    onclick="setFilter('all')">Alle</div>
+    <div class="tab"        data-filter="outgoing" onclick="setFilter('outgoing')">Udgående</div>
+    <div class="tab"        data-filter="incoming" onclick="setFilter('incoming')">Indgående</div>
+  </div>
+
+  <!-- Opkaldsliste -->
+  <div class="call-list" id="call-list">
+    <div class="loading">
+      <div class="spinner"></div>
+      <p>Henter opkald...</p>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // ============================================================
+    // State
+    // ============================================================
+    let sdk = null;
+    let allCalls = [];
+    let currentFilter = 'all';
+    let entityType = '';
+    let entityId = null;
+    let personPhone = '';
+    let backendUrl = window.location.origin;
+
+    // ============================================================
+    // Init Pipedrive SDK
+    // ============================================================
+    async function init() {
+      try {
+        sdk = new AppExtensionsSDK();
+        await sdk.initialize({ size: { height: 600 } });
+
+        const ctx = await sdk.getContext();
+        const data = ctx.data || {};
+
+        entityType = data.entity?.type || '';
+        entityId   = data.entity?.id || null;
+
+        // Hent telefonnummer fra context (Person-panel)
+        if (data.phone) {
+          const primaryPhone = Array.isArray(data.phone)
+            ? (data.phone.find(p => p.primary) || data.phone[0])?.value
+            : data.phone;
+          if (primaryPhone) {
+            personPhone = primaryPhone.replace(/^(\+|00)/, '');
+            document.getElementById('dial-input').value = primaryPhone;
+          }
+        }
+
+        await loadCalls();
+
+        // Genindlæs hvert 30. sekund (for at vise nye opkald + opdaterede AI-resultater)
+        setInterval(loadCalls, 30000);
+
+      } catch (err) {
+        console.error('SDK init fejl:', err);
+
+        // Fallback til URL-parametre (til test)
+        const params = new URLSearchParams(window.location.search);
+        entityType = params.get('type') || 'deal';
+        entityId   = params.get('id') || null;
+        personPhone = params.get('phone') || '';
+
+        if (personPhone) document.getElementById('dial-input').value = personPhone;
+        await loadCalls();
+      }
+    }
+
+    // ============================================================
+    // Hent opkald fra backend
+    // ============================================================
+    async function loadCalls() {
+      try {
+        let url = `${backendUrl}/api/calls?`;
+        if (entityType === 'deal' && entityId)   url += `dealId=${entityId}`;
+        else if (entityType === 'person' && entityId) url += `personId=${entityId}`;
+        else if (personPhone) url += `phone=${personPhone}`;
+        else {
+          showEmpty('Ingen kontekst tilgængelig');
+          return;
+        }
+
+        const res = await fetch(url);
+        const data = await res.json();
+        allCalls = data.calls || [];
+        renderCalls();
+      } catch (err) {
+        console.error('Fejl ved hentning af opkald:', err);
+        showEmpty('Kunne ikke hente opkald');
+      }
+    }
+
+    // ============================================================
+    // Render opkaldsliste
+    // ============================================================
+    function renderCalls() {
+      const filtered = currentFilter === 'all'
+        ? allCalls
+        : allCalls.filter(c => c.direction === currentFilter);
+
+      const container = document.getElementById('call-list');
+
+      if (filtered.length === 0) {
+        showEmpty('Ingen opkald fundet');
+        return;
+      }
+
+      container.innerHTML = filtered.map((call, idx) =>
+        renderCallItem(call, idx)
+      ).join('');
+    }
+
+    function renderCallItem(call, idx) {
+      const isOut = call.direction === 'outgoing';
+      const dirIcon  = isOut ? '↗️' : '↙️';
+      const dirClass = isOut ? 'outgoing' : 'incoming';
+      const dirLabel = isOut ? 'Udgående' : 'Indgående';
+
+      const date = call.started_at
+        ? new Date(call.started_at).toLocaleDateString('da-DK', {
+            day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+          })
+        : '—';
+
+      const duration = call.duration_sec
+        ? `${Math.floor(call.duration_sec / 60)}:${String(call.duration_sec % 60).padStart(2, '0')} min`
+        : '';
+
+      const statusLabel = {
+        done:       'Behandlet',
+        processing: 'Behandler...',
+        pending:    'Venter',
+        failed:     'Fejlet',
+      }[call.transcription_status] || '';
+
+      const statusClass = call.transcription_status || 'pending';
+
+      // Indhold for udfoldet visning
+      const hasAI = call.transcription_status === 'done';
+      const actionPointsHtml = hasAI && call.action_points?.length
+        ? call.action_points.map(ap => `<div class="action-point">${escHtml(ap)}</div>`).join('')
+        : '<div style="color:#aaa;font-size:12px;">Ingen handlingspunkter</div>';
+
+      const topicsHtml = hasAI && call.topics?.length
+        ? `<div class="topics-row">${call.topics.map(t =>
+            `<span class="topic-chip">${escHtml(t)}</span>`).join('')}</div>`
+        : '';
+
+      return `
+        <div class="call-item" id="call-${idx}" onclick="toggleCall(${idx})">
+          <div class="call-header">
+            <div class="call-dir-icon ${dirClass}">${dirIcon}</div>
+            <div class="call-meta">
+              <div class="call-phone">${formatPhone(call.phone_number)}</div>
+              <div class="call-info">${dirLabel} · ${date}${duration ? ' · ' + duration : ''}</div>
+            </div>
+            ${statusLabel ? `<span class="call-status ${statusClass}">${statusLabel}</span>` : ''}
+          </div>
+
+          <div class="call-detail">
+            ${hasAI ? `
+              <div class="detail-section">
+                <div class="detail-label">Resumé</div>
+                <div class="detail-text">${escHtml(call.summary || '')}</div>
+              </div>
+
+              ${topicsHtml ? `
+                <div class="detail-section">
+                  <div class="detail-label">Emner</div>
+                  ${topicsHtml}
+                </div>
+              ` : ''}
+
+              <div class="detail-section">
+                <div class="detail-label">Handlingspunkter</div>
+                ${actionPointsHtml}
+              </div>
+
+              ${call.transcription ? `
+                <div class="transcript-toggle" onclick="toggleTranscript(event, ${idx})">
+                  📄 Vis fuld transskription
+                </div>
+                <div class="transcript-text" id="transcript-${idx}">${escHtml(call.transcription)}</div>
+              ` : ''}
+            ` : `
+              <div style="color:#888;font-size:12px;text-align:center;padding:10px 0;">
+                ${call.transcription_status === 'processing'
+                  ? '⚙️ Optagelsen behandles — kom tilbage om lidt'
+                  : call.transcription_status === 'failed'
+                  ? '❌ Transskription fejlede'
+                  : '⏳ Venter på optagelse fra Relatel'}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    // ============================================================
+    // Toggle udvidet visning
+    // ============================================================
+    function toggleCall(idx) {
+      const el = document.getElementById(`call-${idx}`);
+      el.classList.toggle('expanded');
+    }
+
+    function toggleTranscript(event, idx) {
+      event.stopPropagation();
+      const el = document.getElementById(`transcript-${idx}`);
+      const toggle = event.currentTarget;
+      if (el.style.display === 'block') {
+        el.style.display = 'none';
+        toggle.textContent = '📄 Vis fuld transskription';
+      } else {
+        el.style.display = 'block';
+        toggle.textContent = '📄 Skjul transskription';
+      }
+    }
+
+    // ============================================================
+    // Filter
+    // ============================================================
+    function setFilter(filter) {
+      currentFilter = filter;
+      document.querySelectorAll('.tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.filter === filter);
+      });
+      renderCalls();
+    }
+
+    // ============================================================
+    // Ring op fra panelet
+    // ============================================================
+    async function dialNumber() {
+      const input = document.getElementById('dial-input').value.trim();
+      if (!input) return;
+
+      const btn = document.getElementById('btn-dial');
+      btn.disabled = true;
+      btn.textContent = '⏳ Ringer...';
+
+      try {
+        const res = await fetch(`${backendUrl}/api/calls/initiate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            toNumber: input,
+            personId: entityType === 'person' ? entityId : null,
+            dealId:   entityType === 'deal'   ? entityId : null,
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Fejl');
+
+        showToast('✅ Opkald igangsat — din telefon ringer nu');
+        setTimeout(loadCalls, 5000); // Genindlæs efter 5 sek
+
+      } catch (err) {
+        showToast('❌ ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '📞 Ring op';
+      }
+    }
+
+    // ============================================================
+    // Hjælpefunktioner
+    // ============================================================
+    function showEmpty(msg) {
+      document.getElementById('call-list').innerHTML = `
+        <div class="empty-state">
+          <div class="icon">📭</div>
+          <p>${msg}</p>
+        </div>
+      `;
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3500);
+    }
+
+    function formatPhone(num) {
+      if (!num) return '—';
+      const n = num.replace(/^(\+|00)?45/, '').replace(/\D/g, '');
+      if (n.length === 8) return n.replace(/(\d{2})(\d{2})(\d{2})(\d{2})/, '+45 $1 $2 $3 $4');
+      return '+' + num;
+    }
+
+    function escHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // Start!
+    init();
+  </script>
+</body>
+</html>
