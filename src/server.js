@@ -25,6 +25,11 @@ app.use('/dialer', express.static(path.join(__dirname, '../frontend/dialer')));
 app.use('/panel', express.static(path.join(__dirname, '../frontend/panel')));
 
 // ============================================================
+// Auth Routes (Pipedrive OAuth)
+// ============================================================
+app.use('/auth', require('./routes/auth'));
+
+// ============================================================
 // API Routes
 // ============================================================
 app.use('/api/calls', require('./routes/calls'));
@@ -52,14 +57,14 @@ app.get('/manifest.json', (req, res) => {
     version: '1.0.0',
     extensions: [
       {
-        // Floating window: åbnes når bruger klikker telefonnummer
+        // Floating window: aabnes naar bruger klikker telefonnummer
         type: 'floating-window',
         identifier: 'dialer',
         src: `${config.appUrl}/dialer`,
         size: { width: 340, height: 440 },
       },
       {
-        // Custom sidebar panel på deals og kontakter
+        // Custom sidebar panel paa deals og kontakter
         type: 'panel',
         identifier: 'opkald-panel',
         src: `${config.appUrl}/panel`,
@@ -82,10 +87,11 @@ app.use((err, req, res, _next) => {
 // Start server
 // ============================================================
 app.listen(config.port, () => {
-  console.log(`\n🚀 Zalye Dialer kører på port ${config.port}`);
-  console.log(`   Dialer:  ${config.appUrl}/dialer`);
-  console.log(`   Panel:   ${config.appUrl}/panel`);
-  console.log(`   API:     ${config.appUrl}/api/calls\n`);
+  console.log(`\n Zalye Dialer koerer paa port ${config.port}`);
+  console.log(`  Dialer: ${config.appUrl}/dialer`);
+  console.log(`  Panel:  ${config.appUrl}/panel`);
+  console.log(`  Auth:   ${config.appUrl}/auth/callback`);
+  console.log(`  API:    ${config.appUrl}/api/calls\n`);
 
   // Start polling jobs
   require('./jobs/pollCalls').start();
