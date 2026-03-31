@@ -7,38 +7,138 @@
     <script src="https://cdn.jsdelivr.net/npm/@pipedrive/app-extensions-sdk@0.13.1/dist/index.umd.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #fff; color: #333; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-        .header { background: linear-gradient(135deg, #1a73e8, #0d47a1); color: white; padding: 10px 14px; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-        .header-icon { font-size: 18px; }
-        .header-title { font-weight: 600; font-size: 14px; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f8f9fa;
+            color: #333;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a73e8, #0d47a1);
+            color: white;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .header-icon { font-size: 20px; }
+        .header-title { font-weight: 600; font-size: 15px; }
         .header-subtitle { font-size: 11px; opacity: 0.8; }
-        .content { flex: 1; display: flex; flex-direction: column; padding: 14px; gap: 12px; overflow: hidden; }
-        .person-banner { background: #f0f7ff; border: 1px solid #c8e0ff; border-radius: 8px; padding: 8px 12px; display: none; }
-        .person-name { font-weight: 600; font-size: 13px; color: #1a73e8; }
-        .person-sub { font-size: 11px; color: #666; }
-        .input-group { display: flex; gap: 8px; }
-        .phone-input { flex: 1; padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; font-weight: 500; letter-spacing: 1px; outline: none; transition: border-color 0.2s; }
+        .content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            gap: 12px;
+        }
+        .person-banner {
+            background: #e8f0fe;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 13px;
+            color: #1a73e8;
+            font-weight: 500;
+            display: none;
+        }
+        .input-group {
+            display: flex;
+            gap: 8px;
+        }
+        .phone-input {
+            flex: 1;
+            padding: 10px 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            color: #333;
+            outline: none;
+            transition: border-color 0.2s;
+        }
         .phone-input:focus { border-color: #1a73e8; }
-        .phone-input::placeholder { font-size: 13px; font-weight: 400; letter-spacing: 0; color: #aaa; }
-        .btn { padding: 10px 16px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.15s; white-space: nowrap; }
-        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+        .phone-input::placeholder { color: #aaa; font-size: 14px; }
+        .btn {
+            padding: 10px 18px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .btn:hover { transform: translateY(-1px); }
         .btn:active { transform: translateY(0); }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-        .btn-call { background: #4caf50; color: white; flex: 1; justify-content: center; }
-        .btn-hangup { background: #f44336; color: white; flex: 1; justify-content: center; display: none; }
-        .btn-clear { background: #f5f5f5; color: #666; padding: 10px 12px; }
-        .status-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 80px; }
-        .status-icon { font-size: 40px; }
-        .status-text { font-size: 14px; font-weight: 500; color: #555; text-align: center; }
-        .call-timer { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; color: #333; display: none; }
-        .toast { position: fixed; bottom: 8px; left: 8px; right: 8px; background: #323232; color: white; padding: 8px 12px; border-radius: 6px; font-size: 12px; opacity: 0; transition: opacity 0.3s; pointer-events: none; text-align: center; }
-        .toast.show { opacity: 1; }
-        .debug { font-size: 9px; font-family: monospace; color: #888; max-height: 40px; overflow: hidden; line-height: 1.3; flex-shrink: 0; }
-        body.calling .btn-call { display: none; }
-        body.calling .btn-hangup { display: flex; }
-        body.calling .status-icon { display: none; }
-        body.calling .status-text { display: none; }
-        body.calling .call-timer { display: block; }
+        .btn-call {
+            background: #4caf50;
+            color: white;
+            flex: 1;
+        }
+        .btn-call:hover { background: #43a047; }
+        .btn-call:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-hangup {
+            background: #f44336;
+            color: white;
+            flex: 1;
+            display: none;
+        }
+        .btn-hangup:hover { background: #e53935; }
+        .btn-clear {
+            background: #e0e0e0;
+            color: #555;
+            padding: 10px 12px;
+        }
+        .btn-clear:hover { background: #d5d5d5; }
+        .status-area {
+            text-align: center;
+            padding: 12px 0;
+        }
+        .status-icon { font-size: 40px; margin-bottom: 8px; }
+        .status-text {
+            font-size: 14px;
+            font-weight: 500;
+            color: #555;
+        }
+        .call-timer {
+            font-size: 28px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            color: #333;
+            display: none;
+        }
+        .error-msg {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            color: #856404;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            display: none;
+            text-align: center;
+        }
+        .debug {
+            font-size: 10px;
+            color: #999;
+            font-family: monospace;
+            word-break: break-all;
+            max-height: 50px;
+            overflow: hidden;
+        }
+        body.state-calling .status-icon { display: none; }
+        body.state-calling .call-timer { display: block; }
+        body.state-calling .btn-call { display: none; }
+        body.state-calling .btn-hangup { display: flex; }
+        body.state-calling .phone-input { opacity: 0.6; pointer-events: none; }
+        body.state-calling .btn-clear { display: none; }
     </style>
 </head>
 <body>
@@ -49,139 +149,211 @@
             <div class="header-subtitle">Via Relatel</div>
         </div>
     </div>
+
     <div class="content">
-        <div class="person-banner" id="personBanner">
-            <div class="person-name" id="personName"></div>
-            <div class="person-sub" id="personSub"></div>
-        </div>
+        <div class="person-banner" id="personBanner"></div>
+
         <div class="input-group">
-            <input class="phone-input" id="phoneInput" type="tel" placeholder="Indtast telefonnummer..." />
-            <button class="btn btn-clear" id="btnClear" title="Ryd">&#10006;</button>
+            <input class="phone-input" id="phoneInput" type="tel"
+                placeholder="Indtast telefonnummer..." />
+            <button class="btn btn-clear" id="btnClear">&#10006;</button>
         </div>
+
         <div class="input-group">
-            <button class="btn btn-call" id="btnCall" disabled>&#128222; Ring op</button>
-            <button class="btn btn-hangup" id="btnHangup">&#128308; L&#230;g p&#229;</button>
+            <button class="btn btn-call" id="btnCall" disabled>
+                &#128222; Ring op
+            </button>
+            <button class="btn btn-hangup" id="btnHangup">
+                &#128308; L&#230;g p&#229;
+            </button>
         </div>
+
         <div class="status-area">
-            <div class="status-icon" id="statusIcon">&#128242;</div>
+            <div class="status-icon">&#128242;</div>
             <div class="status-text" id="statusText">Venter p&#229; opkald...</div>
             <div class="call-timer" id="callTimer">00:00</div>
         </div>
+
+        <div class="error-msg" id="errorMsg"></div>
         <div class="debug" id="debug"></div>
     </div>
-    <div class="toast" id="toast"></div>
-    <script>
-        var sdk = null, callActive = false, callInterval = null, callSecs = 0;
-        var personId = null, dealId = null;
-        var phoneInput = document.getElementById('phoneInput');
-        var btnCall = document.getElementById('btnCall');
-        var btnHangup = document.getElementById('btnHangup');
-        var btnClear = document.getElementById('btnClear');
-        var statusText = document.getElementById('statusText');
-        var callTimer = document.getElementById('callTimer');
-        var personBanner = document.getElementById('personBanner');
-        var personName = document.getElementById('personName');
-        var personSub = document.getElementById('personSub');
-        var toast = document.getElementById('toast');
-        var debugEl = document.getElementById('debug');
 
-        function log(m) { console.log('[ZD] ' + m); debugEl.textContent = m; }
-        function showToast(m) { toast.textContent = m; toast.classList.add('show'); setTimeout(function() { toast.classList.remove('show'); }, 3000); }
-        function pad(n) { return n < 10 ? '0' + n : '' + n; }
+    <script>
+        var sdk = null;
+        var callActive = false;
+        var callTimerInterval = null;
+        var callSeconds = 0;
+        var currentPersonId = null;
+        var currentDealId = null;
+
+        var phoneInput   = document.getElementById('phoneInput');
+        var btnCall      = document.getElementById('btnCall');
+        var btnHangup    = document.getElementById('btnHangup');
+        var btnClear     = document.getElementById('btnClear');
+        var statusText   = document.getElementById('statusText');
+        var callTimer    = document.getElementById('callTimer');
+        var errorMsg     = document.getElementById('errorMsg');
+        var personBanner = document.getElementById('personBanner');
+        var debugEl      = document.getElementById('debug');
+
+        function log(msg) {
+            console.log('[ZalyeDialer] ' + msg);
+            debugEl.textContent = msg;
+        }
+
+        function showError(msg) {
+            errorMsg.textContent = msg;
+            errorMsg.style.display = 'block';
+            setTimeout(function() { errorMsg.style.display = 'none'; }, 5000);
+        }
+
+        function formatTime(s) {
+            var m = Math.floor(s / 60);
+            var sec = s % 60;
+            return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
+        }
+
+        function setPhone(phone, name, source) {
+            if (!phone) return;
+            phoneInput.value = phone;
+            btnCall.disabled = false;
+            statusText.textContent = 'Klar til at ringe';
+            if (name) {
+                personBanner.textContent = name;
+                personBanner.style.display = 'block';
+            }
+            log('Nummer sat (' + (source||'') + '): ' + phone);
+        }
+
+        function extractPhone(ctx) {
+            if (!ctx) return null;
+            return ctx.phoneNumber || ctx.phone_number || ctx.phone ||
+                   ctx.number || ctx.callerNumber || null;
+        }
+
+        function extractName(ctx) {
+            if (!ctx) return null;
+            return ctx.personName || ctx.person_name || ctx.name ||
+                   ctx.contactName || null;
+        }
 
         phoneInput.addEventListener('input', function() {
             btnCall.disabled = !phoneInput.value.trim();
-            if (phoneInput.value.trim()) statusText.textContent = 'Klar til at ringe';
+            if (!phoneInput.value.trim()) {
+                statusText.textContent = 'Venter p&#229; opkald...';
+                personBanner.style.display = 'none';
+            }
         });
+
         btnClear.addEventListener('click', function() {
             phoneInput.value = '';
             btnCall.disabled = true;
-            statusText.textContent = 'Venter på opkald...';
+            statusText.textContent = 'Venter p&#229; opkald...';
             personBanner.style.display = 'none';
-            personId = null; dealId = null;
+            currentPersonId = null;
+            currentDealId   = null;
         });
 
-        function setPhone(phone, name, sub) {
-            phoneInput.value = phone || '';
-            btnCall.disabled = !phone;
-            if (phone) statusText.textContent = 'Klar til at ringe';
-            if (name) {
-                personName.textContent = name;
-                personSub.textContent = sub || '';
-                personBanner.style.display = 'block';
-            }
-        }
-
-        function startCall() {
-            if (!phoneInput.value.trim() || callActive) return;
-            callActive = true;
-            document.body.classList.add('calling');
-            callSecs = 0;
-            callTimer.textContent = '00:00';
-            callInterval = setInterval(function() { callSecs++; callTimer.textContent = pad(Math.floor(callSecs/60)) + ':' + pad(callSecs%60); }, 1000);
+        function initiateCall() {
             var number = phoneInput.value.trim();
-            log('Kalder ' + number);
+            if (!number || callActive) return;
+
+            log('Starter opkald til ' + number);
+            callActive = true;
+            document.body.classList.add('state-calling');
+            callSeconds = 0;
+            callTimer.textContent = '00:00';
+            callTimerInterval = setInterval(function() {
+                callSeconds++;
+                callTimer.textContent = formatTime(callSeconds);
+            }, 1000);
+
+            var body = { toNumber: number };
+            if (currentPersonId) body.personId = currentPersonId;
+            if (currentDealId)   body.dealId   = currentDealId;
+
             fetch('/api/calls/initiate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ toNumber: number, personId: personId || undefined, dealId: dealId || undefined })
-            }).then(function(r) { return r.json(); }).then(function(d) {
-                if (d.error) { showToast('Fejl: ' + d.error); endCall(); }
-                else { showToast('&#9989; Opkald igangsat!'); log('Kaldet ' + number); }
-            }).catch(function(e) { showToast('Fejl: ' + e.message); endCall(); });
+                body: JSON.stringify(body)
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                log('Svar: ' + JSON.stringify(d));
+                if (d.error) { showError('Fejl: ' + d.error); endCall(); }
+            })
+            .catch(function(e) {
+                log('Fejl: ' + e.message);
+                showError('Kunne ikke starte opkald');
+                endCall();
+            });
         }
 
         function endCall() {
             callActive = false;
-            document.body.classList.remove('calling');
-            if (callInterval) { clearInterval(callInterval); callInterval = null; }
+            document.body.classList.remove('state-calling');
+            clearInterval(callTimerInterval);
+            callTimerInterval = null;
         }
 
-        btnCall.addEventListener('click', startCall);
+        btnCall.addEventListener('click', initiateCall);
         btnHangup.addEventListener('click', endCall);
-        phoneInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') startCall(); });
 
         function initSDK() {
-            log('Init SDK...');
+            log('Initialiserer SDK...');
             try {
                 var SDK = window.AppExtensionsSDK;
-                if (typeof SDK !== 'function') { log('SDK ikke fundet'); return; }
-                sdk = new SDK();
-                sdk.initialize({ size: { height: 420, width: 360 } }).then(function() {
-                    log('SDK OK');
-                    // Get context to auto-fill phone
-                    sdk.getContext().then(function(ctx) {
-                        log('Context: ' + JSON.stringify(ctx).substring(0, 100));
-                        var data = ctx && (ctx.data || ctx);
-                        if (data) {
-                            // Try to extract phone from person data
-                            var phone = data.phoneNumber || (data.person && data.person.phone && (Array.isArray(data.person.phone) ? (data.person.phone.find(function(p){return p.primary;})||data.person.phone[0]||{}).value : data.person.phone)) || null;
-                            var name = data.personName || (data.person && data.person.name) || null;
-                            var pId = data.personId || (data.person && data.person.id) || null;
-                            var dId = data.dealId || (data.deal && data.deal.id) || null;
-                            personId = pId; dealId = dId;
-                            if (phone) setPhone(phone, name, pId ? 'Person ID: ' + pId : '');
-                            else if (name) { personName.textContent = name; personSub.textContent = 'Ingen telefon registreret'; personBanner.style.display = 'block'; }
-                        }
-                    }).catch(function(e) { log('Context fejl: ' + e.message); });
+                if (!SDK) { log('SDK ikke fundet'); return; }
 
-                    // Listen for VISIBILITY (phone number clicks)
-                    sdk.listen({ event: 'VISIBILITY', callback: function(data) {
-                        log('VISIBILITY: ' + JSON.stringify(data).substring(0, 100));
-                        if (data && data.is_visible) {
-                            var ctx = data.context || data;
-                            var phone = ctx.phoneNumber || ctx.phone || null;
-                            var name = ctx.personName || ctx.name || null;
-                            personId = ctx.personId || null;
-                            dealId = ctx.dealId || null;
-                            if (phone) setPhone(phone, name, '');
+                sdk = new SDK();
+                sdk.initialize({ size: { height: 400, width: 350 } }).then(function() {
+                    log('SDK OK');
+
+                    sdk.listen({
+                        event: 'VISIBILITY',
+                        callback: function(data) {
+                            log('VISIBILITY: ' + JSON.stringify(data).slice(0, 150));
+                            if (data && data.is_visible) {
+                                var ctx = data.context || {};
+                                var phone = extractPhone(ctx);
+                                var name  = extractName(ctx);
+                                var personId = ctx.personId || ctx.person_id || null;
+                                var dealId   = ctx.dealId   || ctx.deal_id   || null;
+
+                                if (phone) {
+                                    currentPersonId = personId;
+                                    currentDealId   = dealId;
+                                    setPhone(phone, name, 'VISIBILITY');
+                                }
+                            }
                         }
-                    }});
-                }).catch(function(e) { log('SDK fejl: ' + e.message); });
-            } catch(e) { log('Exception: ' + e.message); }
+                    });
+
+                    try {
+                        sdk.listen({
+                            event: 'CALLER_DATA',
+                            callback: function(data) {
+                                log('CALLER_DATA: ' + JSON.stringify(data).slice(0, 150));
+                                var phone = extractPhone(data);
+                                if (phone) setPhone(phone, extractName(data), 'CALLER_DATA');
+                            }
+                        });
+                    } catch(e) { /* not available */ }
+
+                }).catch(function(err) {
+                    log('SDK init fejl: ' + (err.message || err));
+                });
+
+            } catch(e) {
+                log('SDK exception: ' + e.message);
+            }
         }
 
-        initSDK();
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initSDK);
+        } else {
+            initSDK();
+        }
     </script>
 </body>
 </html>
