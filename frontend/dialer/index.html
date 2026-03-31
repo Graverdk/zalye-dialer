@@ -42,10 +42,7 @@
             font-weight: 500;
             display: none;
         }
-        .input-group {
-            display: flex;
-            gap: 8px;
-        }
+        .input-group { display: flex; gap: 8px; }
         .phone-input {
             flex: 1;
             padding: 10px 12px;
@@ -74,40 +71,16 @@
         }
         .btn:hover { transform: translateY(-1px); }
         .btn:active { transform: translateY(0); }
-        .btn-call {
-            background: #4caf50;
-            color: white;
-            flex: 1;
-        }
+        .btn-call { background: #4caf50; color: white; flex: 1; }
         .btn-call:hover { background: #43a047; }
-        .btn-call:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-            transform: none;
-        }
-        .btn-hangup {
-            background: #f44336;
-            color: white;
-            flex: 1;
-            display: none;
-        }
+        .btn-call:disabled { background: #ccc; cursor: not-allowed; transform: none; }
+        .btn-hangup { background: #f44336; color: white; flex: 1; display: none; }
         .btn-hangup:hover { background: #e53935; }
-        .btn-clear {
-            background: #e0e0e0;
-            color: #555;
-            padding: 10px 12px;
-        }
+        .btn-clear { background: #e0e0e0; color: #555; padding: 10px 12px; }
         .btn-clear:hover { background: #d5d5d5; }
-        .status-area {
-            text-align: center;
-            padding: 12px 0;
-        }
+        .status-area { text-align: center; padding: 12px 0; }
         .status-icon { font-size: 40px; margin-bottom: 8px; }
-        .status-text {
-            font-size: 14px;
-            font-weight: 500;
-            color: #555;
-        }
+        .status-text { font-size: 14px; font-weight: 500; color: #555; }
         .call-timer {
             font-size: 28px;
             font-weight: 600;
@@ -125,14 +98,7 @@
             display: none;
             text-align: center;
         }
-        .debug {
-            font-size: 10px;
-            color: #999;
-            font-family: monospace;
-            word-break: break-all;
-            max-height: 50px;
-            overflow: hidden;
-        }
+        .debug { font-size: 10px; color: #999; font-family: monospace; word-break: break-all; max-height: 50px; overflow: hidden; }
         body.state-calling .status-icon { display: none; }
         body.state-calling .call-timer { display: block; }
         body.state-calling .btn-call { display: none; }
@@ -149,35 +115,24 @@
             <div class="header-subtitle">Via Relatel</div>
         </div>
     </div>
-
     <div class="content">
         <div class="person-banner" id="personBanner"></div>
-
         <div class="input-group">
-            <input class="phone-input" id="phoneInput" type="tel"
-                placeholder="Indtast telefonnummer..." />
+            <input class="phone-input" id="phoneInput" type="tel" placeholder="Indtast telefonnummer..." />
             <button class="btn btn-clear" id="btnClear">&#10006;</button>
         </div>
-
         <div class="input-group">
-            <button class="btn btn-call" id="btnCall" disabled>
-                &#128222; Ring op
-            </button>
-            <button class="btn btn-hangup" id="btnHangup">
-                &#128308; L&#230;g p&#229;
-            </button>
+            <button class="btn btn-call" id="btnCall" disabled>&#128222; Ring op</button>
+            <button class="btn btn-hangup" id="btnHangup">&#128308; L&#230;g p&#229;</button>
         </div>
-
         <div class="status-area">
             <div class="status-icon">&#128242;</div>
             <div class="status-text" id="statusText">Venter p&#229; opkald...</div>
             <div class="call-timer" id="callTimer">00:00</div>
         </div>
-
         <div class="error-msg" id="errorMsg"></div>
         <div class="debug" id="debug"></div>
     </div>
-
     <script>
         var sdk = null;
         var callActive = false;
@@ -185,6 +140,7 @@
         var callSeconds = 0;
         var currentPersonId = null;
         var currentDealId = null;
+        var activeCallUuid = null;
 
         var phoneInput   = document.getElementById('phoneInput');
         var btnCall      = document.getElementById('btnCall');
@@ -208,33 +164,43 @@
         }
 
         function formatTime(s) {
-            var m = Math.floor(s / 60);
-            var sec = s % 60;
+            var m = Math.floor(s / 60), sec = s % 60;
             return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
         }
 
+        // Ryd dialeren (kaldes når vinduet skjules eller man skifter kontakt)
+        function clearDialer() {
+            if (callActive) return; // Ryd ikke mens et opkald er i gang
+            phoneInput.value = '';
+            btnCall.disabled = true;
+            statusText.textContent = 'Venter p&#229; opkald...';
+            personBanner.style.display = 'none';
+            currentPersonId = null;
+            currentDealId = null;
+        }
+
+        // S&#230;t telefonnummer og kontaktnavn
         function setPhone(phone, name, source) {
-            if (!phone) return;
-            phoneInput.value = phone;
-            btnCall.disabled = false;
-            statusText.textContent = 'Klar til at ringe';
+            phoneInput.value = phone || '';
+            btnCall.disabled = !phone;
+            statusText.textContent = phone ? 'Klar til at ringe' : 'Venter p&#229; opkald...';
             if (name) {
                 personBanner.textContent = name;
                 personBanner.style.display = 'block';
+            } else {
+                personBanner.style.display = 'none';
             }
-            log('Nummer sat (' + (source||'') + '): ' + phone);
+            log((source || '') + ': ' + (phone || 'intet nummer'));
         }
 
         function extractPhone(ctx) {
             if (!ctx) return null;
-            return ctx.phoneNumber || ctx.phone_number || ctx.phone ||
-                   ctx.number || ctx.callerNumber || null;
+            return ctx.phoneNumber || ctx.phone_number || ctx.phone || ctx.number || null;
         }
 
         function extractName(ctx) {
             if (!ctx) return null;
-            return ctx.personName || ctx.person_name || ctx.name ||
-                   ctx.contactName || null;
+            return ctx.personName || ctx.person_name || ctx.name || null;
         }
 
         phoneInput.addEventListener('input', function() {
@@ -245,19 +211,11 @@
             }
         });
 
-        btnClear.addEventListener('click', function() {
-            phoneInput.value = '';
-            btnCall.disabled = true;
-            statusText.textContent = 'Venter p&#229; opkald...';
-            personBanner.style.display = 'none';
-            currentPersonId = null;
-            currentDealId   = null;
-        });
+        btnClear.addEventListener('click', clearDialer);
 
         function initiateCall() {
             var number = phoneInput.value.trim();
             if (!number || callActive) return;
-
             log('Starter opkald til ' + number);
             callActive = true;
             document.body.classList.add('state-calling');
@@ -267,11 +225,9 @@
                 callSeconds++;
                 callTimer.textContent = formatTime(callSeconds);
             }, 1000);
-
             var body = { toNumber: number };
             if (currentPersonId) body.personId = currentPersonId;
             if (currentDealId)   body.dealId   = currentDealId;
-
             fetch('/api/calls/initiate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -281,69 +237,89 @@
             .then(function(d) {
                 log('Svar: ' + JSON.stringify(d));
                 if (d.error) { showError('Fejl: ' + d.error); endCall(); }
+                if (d.callUuid) activeCallUuid = d.callUuid;
             })
             .catch(function(e) {
-                log('Fejl: ' + e.message);
-                showError('Kunne ikke starte opkald');
+                showError('Kunne ikke starte opkald: ' + e.message);
                 endCall();
             });
         }
 
         function endCall() {
+            // Hvis vi har et aktivt opkald UUID, afslut det via API
+            if (activeCallUuid) {
+                fetch('/api/calls/' + activeCallUuid + '/hangup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                }).catch(function() {});
+                activeCallUuid = null;
+            }
             callActive = false;
             document.body.classList.remove('state-calling');
             clearInterval(callTimerInterval);
             callTimerInterval = null;
+            statusText.textContent = 'Opkald afsluttet';
+            setTimeout(function() {
+                statusText.textContent = 'Venter p&#229; opkald...';
+            }, 2000);
         }
 
         btnCall.addEventListener('click', initiateCall);
         btnHangup.addEventListener('click', endCall);
+        phoneInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') initiateCall(); });
 
         function initSDK() {
             log('Initialiserer SDK...');
             try {
                 var SDK = window.AppExtensionsSDK;
                 if (!SDK) { log('SDK ikke fundet'); return; }
-
                 sdk = new SDK();
                 sdk.initialize({ size: { height: 400, width: 350 } }).then(function() {
                     log('SDK OK');
 
+                    // VISIBILITY: fyrer n&#229;r vinduet vises/skjules
+                    // is_visible=true + context.phoneNumber = nyt nummer fra klik
+                    // is_visible=false = vinduet lukkes -> ryd
                     sdk.listen({
                         event: 'VISIBILITY',
                         callback: function(data) {
-                            log('VISIBILITY: ' + JSON.stringify(data).slice(0, 150));
-                            if (data && data.is_visible) {
-                                var ctx = data.context || {};
-                                var phone = extractPhone(ctx);
-                                var name  = extractName(ctx);
-                                var personId = ctx.personId || ctx.person_id || null;
-                                var dealId   = ctx.dealId   || ctx.deal_id   || null;
+                            log('VISIBILITY is_visible=' + (data && data.is_visible) + ' ctx=' + JSON.stringify((data && data.context) || {}).slice(0, 80));
 
-                                if (phone) {
-                                    currentPersonId = personId;
-                                    currentDealId   = dealId;
-                                    setPhone(phone, name, 'VISIBILITY');
-                                }
+                            if (!data) return;
+
+                            if (!data.is_visible) {
+                                // Vinduet er skjult -> ryd s&#229; n&#230;ste &#229;bning starter frisk
+                                clearDialer();
+                                return;
                             }
+
+                            // Vinduet er synligt -> opdater ALTID (ogs&#229; selvom intet nummer)
+                            var ctx = data.context || {};
+                            var phone = extractPhone(ctx);
+                            var name  = extractName(ctx);
+                            currentPersonId = ctx.personId || ctx.person_id || null;
+                            currentDealId   = ctx.dealId   || ctx.deal_id   || null;
+
+                            // S&#230;t nummer (eller ryd hvis intet nummer - undg&#229;r gammelt nummer h&#230;nger)
+                            setPhone(phone, name, 'VISIBILITY');
                         }
                     });
 
+                    // CALLER_DATA som fallback
                     try {
                         sdk.listen({
                             event: 'CALLER_DATA',
                             callback: function(data) {
-                                log('CALLER_DATA: ' + JSON.stringify(data).slice(0, 150));
+                                log('CALLER_DATA: ' + JSON.stringify(data).slice(0, 100));
                                 var phone = extractPhone(data);
                                 if (phone) setPhone(phone, extractName(data), 'CALLER_DATA');
                             }
                         });
-                    } catch(e) { /* not available */ }
+                    } catch(e) { /* ikke tilg&#230;ngelig */ }
 
                 }).catch(function(err) {
-                    log('SDK init fejl: ' + (err.message || err));
+                    log('SDK fejl: ' + (err.message || err));
                 });
-
             } catch(e) {
                 log('SDK exception: ' + e.message);
             }
