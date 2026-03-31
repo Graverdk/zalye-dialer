@@ -5,6 +5,12 @@ const config = require('./config');
 
 const app = express();
 
+// Request logging
+app.use((req, res, next) => {
+  console.log(`[HTTP] ${req.method} ${req.url} from ${req.headers.referer || "direct"}`);
+  next();
+});
+
 // ============================================================
 // Middleware
 // ============================================================
