@@ -126,7 +126,7 @@
             font-family: monospace;
             font-size: 10px;
             padding: 4px 8px;
-            max-height: 60px;
+            max-height: 80px;
             overflow-y: auto;
             display: none;
         }
@@ -235,13 +235,12 @@
         function initSDK() {
             log('Initialiserer SDK...');
             try {
-                var AppExtensionsSDK = window.AppExtensionsSDK;
-                if (!AppExtensionsSDK) {
-                    log('FEJL: AppExtensionsSDK ikke fundet paa window');
+                if (typeof window.AppExtensionsSDK !== 'function') {
+                    log('FEJL: AppExtensionsSDK ikke fundet som funktion. Type: ' + typeof window.AppExtensionsSDK);
                     return;
                 }
 
-                sdk = new AppExtensionsSDK.default({ identifier: 'zalye-dialer' });
+                sdk = new window.AppExtensionsSDK({ identifier: 'zalye-dialer' });
 
                 sdk.initialize({ size: { height: 400, width: 350 } }).then(function() {
                     log('SDK initialiseret OK');
@@ -268,34 +267,16 @@
                         }
                     });
 
-                    // Also try listening for CONTEXT_UPDATE
+                    // Get initial context
                     try {
-                        sdk.listen({
-                            event: 'CONTEXT_UPDATE',
-                            callback: function(data) {
-                                log('CONTEXT_UPDATE: ' + JSON.stringify(data));
-                                if (data && data.phoneNumber) {
-                                    setPhoneNumber(data.phoneNumber, data.personName || null);
-                                    currentPersonId = data.personId || null;
-                                    currentDealId = data.dealId || null;
-                                }
-                            }
+                        sdk.execute('GET_METADATA').then(function(metadata) {
+                            log('Metadata: ' + JSON.stringify(metadata));
+                        }).catch(function(e) {
+                            log('Metadata fejl: ' + e.message);
                         });
                     } catch(e) {
-                        log('CONTEXT_UPDATE listener not available: ' + e.message);
+                        log('Metadata not available');
                     }
-
-                    // Get initial context
-                    sdk.getContext().then(function(context) {
-                        log('Initial context: ' + JSON.stringify(context));
-                        if (context && context.phoneNumber) {
-                            setPhoneNumber(context.phoneNumber, context.personName || null);
-                            currentPersonId = context.personId || null;
-                            currentDealId = context.dealId || null;
-                        }
-                    }).catch(function(e) {
-                        log('getContext fejl: ' + e.message);
-                    });
 
                 }).catch(function(err) {
                     log('SDK init fejl: ' + (err.message || err));
