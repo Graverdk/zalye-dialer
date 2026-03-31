@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const required = (name) => {
   const value = process.env[name];
-  if (!value) throw new Error(`Manglende miljøvariabel: ${name}. Tjek din .env fil.`);
+  if (!value) throw new Error(`Manglende miljovariabel: ${name}. Tjek din .env fil.`);
   return value;
 };
 
@@ -23,6 +23,8 @@ module.exports = {
 
   pipedrive: {
     apiToken: required('PIPEDRIVE_API_TOKEN'),
+    clientId: required('PIPEDRIVE_CLIENT_ID'),
+    clientSecret: required('PIPEDRIVE_CLIENT_SECRET'),
     domain: optional('PIPEDRIVE_COMPANY_DOMAIN', 'app'),
     get baseUrl() {
       return `https://${this.domain}.pipedrive.com/api/v1`;
