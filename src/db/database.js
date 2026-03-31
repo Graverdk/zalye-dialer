@@ -314,7 +314,7 @@ const insights = {
       buying_signals:     row.buying_signals ? JSON.parse(row.buying_signals) : [],
       competitor_mentions: row.competitor_mentions ? JSON.parse(row.competitor_mentions) : [],
       next_steps:         row.next_steps ? JSON.parse(row.next_steps) : [],
-    })),
+    }));
   },
 
   // Hent aggregerede salgs-trends (til fremtidig sales coach)
