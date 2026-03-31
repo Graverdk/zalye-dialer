@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Zalye Dialer</title>
-    <script src="https://unpkg.com/@pipedrive/app-extensions-sdk@1/dist/bundle.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@pipedrive/app-extensions-sdk/dist/index.umd.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -114,7 +114,7 @@
 </head>
 <body>
     <div class="header">
-        <div class="header-logo">📞</div>
+        <div class="header-logo">ð</div>
         <div>
             <h1>Zalye Dialer</h1>
             <p>Via Relatel</p>
@@ -122,13 +122,13 @@
     </div>
 
     <div class="contact-section">
-        <div class="contact-avatar" id="contact-avatar">👤</div>
-        <div class="contact-name" id="contact-name">Venter på opkald...</div>
-        <div class="contact-phone" id="contact-phone">Klik på et telefonnummer i Pipedrive</div>
+        <div class="contact-avatar" id="contact-avatar">ð¤</div>
+        <div class="contact-name" id="contact-name">Venter pÃ¥ opkald...</div>
+        <div class="contact-phone" id="contact-phone">Klik pÃ¥ et telefonnummer i Pipedrive</div>
     </div>
 
     <div class="status-section">
-        <div class="status-icon idle" id="status-icon">📞</div>
+        <div class="status-icon idle" id="status-icon">ð</div>
         <div class="status-text" id="status-text">Klar til at ringe</div>
         <div class="timer" id="timer" style="display:none">0:00</div>
     </div>
@@ -137,10 +137,10 @@
 
     <div class="btn-row" id="btn-row">
         <button class="btn btn-call" id="btn-call" onclick="startCall()" disabled>
-            📞 Ring op
+            ð Ring op
         </button>
         <button class="btn btn-close" id="btn-close" onclick="closeDialer()">
-            ✕ Luk
+            â Luk
         </button>
     </div>
 
@@ -170,7 +170,7 @@
                 extractPhoneData(ctx);
 
                 // VIGTIG: Lyt efter VISIBILITY events
-                // Når bruger klikker på et telefonnummer i Pipedrive,
+                // NÃ¥r bruger klikker pÃ¥ et telefonnummer i Pipedrive,
                 // sender Pipedrive SHOW_FLOATING_WINDOW med context-data.
                 sdk.listen(Event.VISIBILITY, ({ error, data }) => {
                     if (error) {
@@ -241,9 +241,9 @@
 
         function updateContactUI() {
             document.getElementById('contact-name').textContent = contactName || 'Ukendt';
-            document.getElementById('contact-phone').textContent = formatPhone(phoneNumber) || '—';
+            document.getElementById('contact-phone').textContent = formatPhone(phoneNumber) || 'â';
             document.getElementById('contact-avatar').textContent = contactName && contactName !== 'Ukendt kontakt'
-                ? contactName.charAt(0).toUpperCase() : '👤';
+                ? contactName.charAt(0).toUpperCase() : 'ð¤';
         }
 
         function formatPhone(num) {
@@ -278,7 +278,7 @@
         async function endCall() {
             if (sdk) { try { await sdk.execute(Command.SET_FOCUS_MODE, false); } catch(e) {} }
             setCallState('processing');
-            showMessage('Opkaldet er afsluttet. Transskription og resumé behandles automatisk.', 'success');
+            showMessage('Opkaldet er afsluttet. Transskription og resumÃ© behandles automatisk.', 'success');
         }
 
         async function closeDialer() {
@@ -298,34 +298,34 @@
             clearInterval(timerInterval);
             switch (state) {
                 case 'ringing':
-                    icon.className = 'status-icon ringing'; icon.textContent = '📲';
+                    icon.className = 'status-icon ringing'; icon.textContent = 'ð²';
                     text.textContent = 'Ringer...'; timer.style.display = 'none';
-                    btnRow.innerHTML = '<button class="btn btn-end" onclick="endCall()">📵 Afslut</button>';
+                    btnRow.innerHTML = '<button class="btn btn-end" onclick="endCall()">ðµ Afslut</button>';
                     break;
                 case 'active':
-                    icon.className = 'status-icon active'; icon.textContent = '🔊';
+                    icon.className = 'status-icon active'; icon.textContent = 'ð';
                     text.textContent = 'Forbundet'; timerSec = 0;
                     timer.style.display = 'block'; timer.textContent = '0:00';
                     timerInterval = setInterval(() => {
                         timerSec++;
                         timer.textContent = Math.floor(timerSec/60) + ':' + String(timerSec%60).padStart(2,'0');
                     }, 1000);
-                    btnRow.innerHTML = '<button class="btn btn-end" onclick="endCall()">📵 Afslut opkald</button>';
+                    btnRow.innerHTML = '<button class="btn btn-end" onclick="endCall()">ðµ Afslut opkald</button>';
                     break;
                 case 'ended': case 'processing':
-                    icon.className = 'status-icon processing'; icon.textContent = '⚙️';
+                    icon.className = 'status-icon processing'; icon.textContent = 'âï¸';
                     text.textContent = 'Behandler optagelse...'; timer.style.display = 'none';
-                    btnRow.innerHTML = '<button class="btn btn-close" onclick="closeDialer()">✕ Luk</button>';
+                    btnRow.innerHTML = '<button class="btn btn-close" onclick="closeDialer()">â Luk</button>';
                     break;
                 case 'error':
-                    icon.className = 'status-icon error'; icon.textContent = '❌';
+                    icon.className = 'status-icon error'; icon.textContent = 'â';
                     text.textContent = 'Opkald fejlede'; timer.style.display = 'none';
-                    btnRow.innerHTML = '<button class="btn btn-call" onclick="startCall()">🔄 Prøv igen</button><button class="btn btn-close" onclick="closeDialer()">✕ Luk</button>';
+                    btnRow.innerHTML = '<button class="btn btn-call" onclick="startCall()">ð PrÃ¸v igen</button><button class="btn btn-close" onclick="closeDialer()">â Luk</button>';
                     break;
                 default:
-                    icon.className = 'status-icon idle'; icon.textContent = '📞';
+                    icon.className = 'status-icon idle'; icon.textContent = 'ð';
                     text.textContent = 'Klar til at ringe'; timer.style.display = 'none';
-                    btnRow.innerHTML = '<button class="btn btn-call" id="btn-call" onclick="startCall()" ' + (phoneNumber ? '' : 'disabled') + '>📞 Ring op</button><button class="btn btn-close" onclick="closeDialer()">✕ Luk</button>';
+                    btnRow.innerHTML = '<button class="btn btn-call" id="btn-call" onclick="startCall()" ' + (phoneNumber ? '' : 'disabled') + '>ð Ring op</button><button class="btn btn-close" onclick="closeDialer()">â Luk</button>';
                     break;
             }
         }
