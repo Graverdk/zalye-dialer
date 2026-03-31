@@ -33,6 +33,7 @@
         .call-timer { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; color: #333; display: none; }
         .error-msg { background: #fff3cd; border: 1px solid #ffc107; color: #856404; padding: 8px 12px; border-radius: 6px; font-size: 12px; display: none; text-align: center; }
         .debug { font-size: 10px; color: #999; font-family: monospace; word-break: break-all; max-height: 60px; overflow: auto; line-height: 1.4; }
+        .info-banner { background: #e8f5e9; border: 1px solid #a5d6a7; color: #2e7d32; padding: 6px 10px; border-radius: 6px; font-size: 11px; display: flex; align-items: center; gap: 5px; }
         body.state-calling .status-icon { display: none; }
         body.state-calling .call-timer { display: block; }
         body.state-calling .btn-call { display: none; }
@@ -51,6 +52,7 @@
     </div>
     <div class="content">
         <div class="person-banner" id="personBanner"></div>
+        <div class="info-banner">&#128187; Husk: Relatel desktop-app skal v&#230;re &#229;ben</div>
         <div class="input-group">
             <input class="phone-input" id="phoneInput" type="tel" placeholder="Indtast telefonnummer..." />
             <button class="btn btn-clear" id="btnClear">&#10006;</button>
@@ -169,10 +171,10 @@
             document.body.classList.add('state-calling');
             callSeconds = 0; callTimer.textContent = '00:00';
             callTimerInterval = setInterval(function() { callSeconds++; callTimer.textContent = formatTime(callSeconds); }, 1000);
-            var body = { toNumber: number };
+            var body = { toNumber: number, restrictTo: 'web_call' };
             if (currentPersonId) body.personId = currentPersonId;
             if (currentDealId)   body.dealId   = currentDealId;
-            log('Ringer: ' + number);
+            log('Ringer via desktop: ' + number);
             fetch('/api/calls/initiate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
                 .then(function(r) { return r.json(); })
                 .then(function(d) { if (d.error) { showError(d.error); endCall(); } })
