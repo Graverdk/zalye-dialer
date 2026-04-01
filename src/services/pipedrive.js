@@ -4,173 +4,188 @@ const config = require('../config');
 const BASE = config.pipedrive.baseUrl;
 const TOKEN = config.pipedrive.apiToken;
 
-async function request(method, path, body = null) {
-  const separator = path.includes('?') ? '&' : '?';
-  const url = `${BASE}${path}${separator}api_token=${TOKEN}`;
+// ============================================================
+// Find Pipedrive-person baseret på telefonnummer
+// Søger på de SIDSTE 8 cifre — matcher alle formater:
+// 41291042, +4541291042, 4541291042, 0045 41291042 osv.
+// ============================================================
+async function findPersonByPhone(rawPhone) {
+  if (!rawPhone) return null;
 
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-  };
-  if (body) opts.body = JSON.stringify(body);
+  // Fjern alt undtagen cifre
+  const digits = rawPhone.replace(/\D/g, '');
+  if (digits.length < 8) return null;
 
-  const res = await fetch(url, opts);
-  const json = await res.json().catch(() => ({}));
+  // Søg på de sidste 8 cifre (det lokale nummer uden landekode)
+  // Pipedrive's søgning finder nummeret uanset om det er gemt med eller uden +45
+  const localNumber = digits.slice(-8);
 
-  if (!res.ok) {
-    throw new Error(`Pipedrive API fejl ${res.status} på ${path}: ${JSON.stringify(json)}`);
+  const url = `${BASE}/persons/search?term=${encodeURIComponent(localNumber)}&fields=phone&api_token=${TOKEN}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  const items = data?.data?.items || [];
+
+  if (items.length > 0) {
+    console.log(`[Pipedrive] Fandt kontakt for ${localNumber} (fra ${digits})`);
+    return items[0].item;
   }
-  return json.data || json;
+
+  console.log(`[Pipedrive] Ingen kontakt fundet for ${localNumber} (fra ${digits})`);
+  return null;
 }
 
 // ============================================================
-// Find person i Pipedrive ud fra telefonnummer
-// ============================================================
-async function findPersonByPhone(phoneNumber) {
-  const normalized = phoneNumber.replace(/^(\+|00)/, '');
-  try {
-    const data = await request('GET', `/persons/search?term=${encodeURIComponent(normalized)}&fields=phone&limit=1`);
-    const items = data?.items || [];
-    return items.length > 0 ? items[0].item : null;
-  } catch {
-    return null;
-  }
-}
-
-// ============================================================
-// Hent person med tilhørende deals
+// Hent person + seneste deal
 // ============================================================
 async function getPersonWithDeals(personId) {
-  try {
-    const [person, dealsData] = await Promise.all([
-      request('GET', `/persons/${personId}`),
-      request('GET', `/persons/${personId}/deals?limit=1&status=open`),
-    ]);
-    const deals = Array.isArray(dealsData) ? dealsData : [];
-    return { person, latestDealId: deals.length > 0 ? deals[0].id : null };
-  } catch {
-    return null;
-  }
+  const url = `${BASE}/persons/${personId}/deals?api_token=${TOKEN}&status=open&limit=1`;
+  const res = await fetch(url);
+  const data = await res.json();
+  const deals = data?.data || [];
+  return { latestDealId: deals[0]?.id || null };
 }
 
 // ============================================================
-// Opret note på deal eller person med opkaldsresumé
+// Opret note i Pipedrive for et opkald
 // ============================================================
 async function createCallNote({ dealId, personId, callData }) {
   const { direction, phoneNumber, startedAt, durationSec, summary, actionPoints, topics, transcription } = callData;
 
-  const dirLabel = direction === 'outgoing' ? 'Udgående opkald' : 'Indgående opkald';
-  const durationText = durationSec
-    ? `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, '0')} min`
-    : '';
+  const dirLabel = direction === 'outgoing' ? 'Udgående' : 'Indgående';
+  const date = startedAt ? new Date(startedAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : '—';
+  const min = Math.floor((durationSec || 0) / 60);
+  const sec = (durationSec || 0) % 60;
+  const durStr = `${min}m ${sec}s`;
 
-  const actionPointsHtml = actionPoints && actionPoints.length > 0
-    ? `<ul>${actionPoints.map(ap => `<li>${ap}</li>`).join('')}</ul>`
-    : '';
+  let content = `## Opkald — ${dirLabel}\n`;
+  content += `**Tidspunkt:** ${date}\n`;
+  content += `**Nummer:** ${phoneNumber || '—'}\n`;
+  content += `**Varighed:** ${durStr}\n\n`;
 
-  const topicsText = topics && topics.length > 0 ? topics.join(', ') : '';
+  if (summary) {
+    content += `### Resumé\n${summary}\n\n`;
+  }
+  if (actionPoints && actionPoints.length > 0) {
+    content += `### Handlingspunkter\n${actionPoints.map(a => `- ${a}`).join('\n')}\n\n`;
+  }
+  if (topics && topics.length > 0) {
+    content += `### Emner\n${topics.map(t => `- ${t}`).join('\n')}\n\n`;
+  }
+  if (transcription && transcription.trim().length > 0) {
+    content += `### Transskription\n${transcription}\n`;
+  }
 
-  const content = `
-<h3>Opkald — ${dirLabel}</h3>
-<p>${phoneNumber}${durationText ? ` · ${durationText}` : ''}${topicsText ? ` · ${topicsText}` : ''}</p>
-
-${summary ? `<p><strong>Resumé:</strong> ${summary}</p>` : ''}
-
-${actionPointsHtml ? `<p><strong>Handlingspunkter:</strong></p>${actionPointsHtml}` : ''}
-
-${transcription ? `<details><summary>Vis transskription</summary><p style="font-size:0.9em;color:#555;">${transcription.replace(/\n/g, '<br>')}</p></details>` : ''}
-`.trim();
-
-  const body = { content };
-  if (dealId) body.deal_id = dealId;
+  const body = { content, pinned_to_deal_flag: !!dealId };
+  if (dealId)   body.deal_id   = dealId;
   if (personId) body.person_id = personId;
 
-  const note = await request('POST', '/notes', body);
-  return note.id;
+  const res = await fetch(`${BASE}/notes?api_token=${TOKEN}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  return data?.data?.id || null;
 }
 
 // ============================================================
-// Opret aktivitet (Call) på deal eller person
+// Opret aktivitet i Pipedrive for et opkald
 // ============================================================
 async function createCallActivity({ dealId, personId, subject, durationSec, doneAt }) {
   const body = {
-    subject: subject || 'Opkald via Zalye Dialer',
+    subject,
     type: 'call',
     done: 1,
-    due_date: doneAt ? doneAt.substring(0, 10) : new Date().toISOString().substring(0, 10),
-    duration: durationSec ? `${String(Math.floor(durationSec / 3600)).padStart(2, '0')}:${String(Math.floor((durationSec % 3600) / 60)).padStart(2, '0')}:${String(durationSec % 60).padStart(2, '0')}` : '00:00:00',
+    due_date: doneAt ? doneAt.split('T')[0] : new Date().toISOString().split('T')[0],
+    duration: durationSec
+      ? `${String(Math.floor(durationSec / 3600)).padStart(2,'0')}:${String(Math.floor((durationSec % 3600)/60)).padStart(2,'0')}:${String(durationSec % 60).padStart(2,'0')}`
+      : '00:00:00',
   };
-  if (dealId)   body.deal_id = dealId;
+  if (dealId)   body.deal_id   = dealId;
   if (personId) body.person_id = personId;
 
-  return request('POST', '/activities', body);
+  const res = await fetch(`${BASE}/activities?api_token=${TOKEN}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  return data?.data?.id || null;
 }
 
 // ============================================================
-// Opret SMS-note i Pipedrive
+// Opret note i Pipedrive for en SMS
 // ============================================================
-async function createSmsNote({ dealId, personId, smsData }) {
-  const { direction, phoneNumber, body, sentAt } = smsData;
-  const dirLabel = direction === 'outgoing' ? 'Sendt SMS' : 'Modtaget SMS';
+async function createSmsNote({ personId, dealId, smsData }) {
+  const { direction, phoneNumber, body: msgBody, sentAt } = smsData;
+  const dirLabel = direction === 'outgoing' ? 'Sendt' : 'Modtaget';
+  const date = sentAt ? new Date(sentAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : '—';
 
-  const content = `
-<h3>SMS — ${dirLabel}</h3>
-<p>${(body || '').replace(/\n/g, '<br>')}</p>
-<p style="font-size:0.85em;color:#666;">${phoneNumber}</p>
-`.trim();
+  let content = `## SMS — ${dirLabel}\n`;
+  content += `**Tidspunkt:** ${date}\n`;
+  content += `**Nummer:** ${phoneNumber || '—'}\n\n`;
+  content += msgBody || '(tom besked)';
 
   const noteBody = { content };
-  if (dealId) noteBody.deal_id = dealId;
+  if (dealId)   noteBody.deal_id   = dealId;
   if (personId) noteBody.person_id = personId;
 
-  const note = await request('POST', '/notes', noteBody);
-  return note.id;
+  const res = await fetch(`${BASE}/notes?api_token=${TOKEN}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(noteBody),
+  });
+  const data = await res.json();
+  return data?.data?.id || null;
 }
 
 // ============================================================
-// Opret Relatel-note i Pipedrive
+// Opret note i Pipedrive for en Relatel-note/kommentar
 // ============================================================
-async function createRelatelNote({ dealId, personId, noteData }) {
-  const { author, body } = noteData;
+async function createRelatelNote({ personId, dealId, noteData }) {
+  const { author, body: noteBody, createdAt } = noteData;
+  const date = createdAt ? new Date(createdAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : '—';
 
-  const content = `
-<h3>Note</h3>
-<p>${(body || '').replace(/\n/g, '<br>')}</p>
-${author ? `<p style="font-size:0.85em;color:#666;">— ${author}</p>` : ''}
-`.trim();
+  let content = `## Note\n`;
+  content += `**Dato:** ${date}\n`;
+  if (author) content += `**Skrevet af:** ${author}\n`;
+  content += `\n${noteBody || '(tom note)'}`;
 
-  const noteBody = { content };
-  if (dealId) noteBody.deal_id = dealId;
-  if (personId) noteBody.person_id = personId;
+  const body = { content };
+  if (dealId)   body.deal_id   = dealId;
+  if (personId) body.person_id = personId;
 
-  const note = await request('POST', '/notes', noteBody);
-  return note.id;
+  const res = await fetch(`${BASE}/notes?api_token=${TOKEN}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  return data?.data?.id || null;
 }
 
 // ============================================================
-// Opret person i Pipedrive med navn, virksomhed og nummer
+// Opret ny person i Pipedrive
 // ============================================================
 async function createPerson({ name, phone, orgName }) {
-  const body = {
-    name: name || phone || 'Ukendt',
-    phone: [{ value: phone, primary: true }],
-  };
+  const body = { name, phone: [{ value: phone, primary: true }] };
+  if (orgName) body.org_name = orgName;
 
-  // Opret organisation først, hvis vi har et navn
-  if (orgName) {
-    try {
-      const org = await request('POST', '/organizations', { name: orgName });
-      if (org && org.id) body.org_id = org.id;
-    } catch (err) {
-      console.error('[Pipedrive] Kunne ikke oprette organisation:', err.message);
-    }
-  }
-
-  return request('POST', '/persons', body);
+  const res = await fetch(`${BASE}/persons?api_token=${TOKEN}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  return data?.data || null;
 }
 
 module.exports = {
-  findPersonByPhone, getPersonWithDeals,
-  createCallNote, createCallActivity,
-  createSmsNote, createRelatelNote, createPerson,
+  findPersonByPhone,
+  getPersonWithDeals,
+  createCallNote,
+  createCallActivity,
+  createSmsNote,
+  createRelatelNote,
+  createPerson,
 };
