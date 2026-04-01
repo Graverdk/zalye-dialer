@@ -24,6 +24,24 @@ async function pollNewCalls() {
     const nc = relatel.normalizeCall(rc);
     if (!nc.phone_number) continue;
 
+    // Hent fulde opkaldsdetaljer hvis listen ikke inkluderer recording_url
+    if (!nc.recording_url && nc.relatel_uuid) {
+      try {
+        const fullCall = await relatel.getCall(nc.relatel_uuid);
+        if (fullCall) {
+          const detailed = relatel.normalizeCall(fullCall);
+          if (detailed.recording_url) {
+            nc.recording_url = detailed.recording_url;
+            console.log('[Poll] Optagelse fundet via enkelt-opkald for ' + nc.relatel_uuid);
+          } else {
+            console.log('[Poll] Ingen optagelse for ' + nc.relatel_uuid + ' (rc.recording=' + JSON.stringify(fullCall.recording || null) + ')');
+          }
+        }
+      } catch (e) {
+        console.error('[Poll] Fejl ved enkelt-opkald:', e.message);
+      }
+    }
+
     calls.upsert(nc);
 
     const person = await pipedrive.findPersonByPhone(nc.phone_number);
