@@ -35,7 +35,7 @@ Analyser samtalen og returner et JSON-objekt med praecis disse felter:
   "engagement_score": 7,
   "conversion_likelihood": 6,
   "ai_coaching_note": "1-2 saetninger med konkret feedback til saelgeren. Hvad gik godt? Hvad kunne forbedres?",
-  "diarized_transcription": "- Saelger: Hej, det er Jeppe fra Zalye...\\n- Kunde: Ja hej, hvad drejer det sig om?\\n- Saelger: ..."
+  "diarized_transcription": "- SÃ¦lger: Hej, det er Jeppe fra Zalye...\\n- Kunde: Ja hej, hvad drejer det sig om?\\n- SÃ¦lger: ..."
 }
 
 Regler:
@@ -47,7 +47,7 @@ Regler:
 - engagement_score (1-10): Baseret paa hvor aktiv og interesseret kunden loed
 - conversion_likelihood (1-10): Baseret paa helheden af samtalen
 - ai_coaching_note: Vaer specifik og konstruktiv
-- diarized_transcription: Omskriv transskriptionen saa hver replik er markeret med enten "Saelger:" eller "Kunde:". ${direction === 'outgoing' ? 'Da det er et udgaaende opkald, er det saelgeren der starter samtalen.' : 'Da det er et indgaaende opkald, er det kunden der starter samtalen.'} Brug linjeformat med "- Saelger:" og "- Kunde:" foran hver replik. Bevar det originale indhold saa praecist som muligt, men opdel det i tydelige ture.
+- diarized_transcription: Omskriv transskriptionen saa hver replik er markeret med enten "SÃ¦lger:" eller "Kunde:". ${direction === 'outgoing' ? 'Da det er et udgaaende opkald, er det saelgeren der starter samtalen.' : 'Da det er et indgaaende opkald, er det kunden der starter samtalen.'} Brug linjeformat med "- SÃ¦lger:" og "- Kunde:" foran hver replik. Bevar det originale indhold saa praecist som muligt, men opdel det i tydelige ture.
 - Hvis et felt ikke er relevant, brug tom array [] eller null
 - Returner KUN det rene JSON-objekt, ingen markdown, ingen forklaring
 
