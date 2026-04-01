@@ -7,6 +7,26 @@ const pipedrive = require('../services/pipedrive');
 const { transcribe } = require('../services/transcription');
 const claude = require('../services/claude');
 
+// In-memory cache: phone number -> { personId, latestDealId, ts }
+const personCache = new Map();
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutter
+
+async function lookupPerson(phoneNumber) {
+  const cached = personCache.get(phoneNumber);
+  if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
+    return cached;
+  }
+  const person = await pipedrive.findPersonByPhone(phoneNumber);
+  if (!person) {
+    personCache.set(phoneNumber, { personId: null, latestDealId: null, ts: Date.now() });
+    return null;
+  }
+  const { latestDealId } = await pipedrive.getPersonWithDeals(person.id);
+  const entry = { personId: person.id, latestDealId, ts: Date.now() };
+  personCache.set(phoneNumber, entry);
+  return entry;
+}
+
 async function pollNewCalls() {
   const lastChecked = state.get('last_call_check') || new Date(Date.now() - 60000).toISOString();
   console.log('[Poll] Henter opkald afsluttet efter: ' + lastChecked);
@@ -36,14 +56,13 @@ async function pollNewCalls() {
     }
 
     calls.upsert(nc);
-    const person = await pipedrive.findPersonByPhone(nc.phone_number);
-    if (!person) continue;
+    const lookup = await lookupPerson(nc.phone_number);
+    if (!lookup || !lookup.personId) continue;
     const existing = calls.getByUuid(nc.relatel_uuid);
     if (existing && existing.pipedrive_note_id) continue;
-    const { latestDealId } = await pipedrive.getPersonWithDeals(person.id);
     const noteId = await pipedrive.createCallNote({
-      personId: person.id,
-      dealId: latestDealId,
+      personId: lookup.personId,
+      dealId: lookup.latestDealId,
       callData: {
         direction: nc.direction,
         phoneNumber: nc.phone_number,
@@ -53,7 +72,7 @@ async function pollNewCalls() {
     });
     if (noteId) {
       db.prepare('UPDATE calls SET pipedrive_note_id = ?, pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
-        .run(noteId, person.id, latestDealId, nc.relatel_uuid);
+        .run(noteId, lookup.personId, lookup.latestDealId, nc.relatel_uuid);
       console.log('[Poll] Opkaldsnote oprettet (note ' + noteId + ') for ' + nc.phone_number);
     }
   }
@@ -80,7 +99,6 @@ async function processTranscriptions() {
 
       if (transcription) {
         console.log('[AI] Analyserer med Claude...');
-        // FIX: brug analyzeCall (ikke summarizeCall) med korrekt parameter-format
         const analysis = await claude.analyzeCall({
           transcription,
           direction: call.direction,
@@ -144,14 +162,6 @@ async function processTranscriptions() {
 
 async function fetchNewMessages() {
   const lastChecked = state.get('last_sms_check') || new Date(Date.now() - 60000).toISOString();
-  console.log('[SMS] Henter beskeder efter: ' + lastChecked);
-
-  try {
-    const allMsgs = await relatel.getMessages({});
-    console.log('[SMS] DEBUG /messages (ingen filter): ' + (allMsgs ? allMsgs.length : 'null') + ' beskeder totalt');
-  } catch (e) {
-    console.error('[SMS] DEBUG fejl:', e.message);
-  }
 
   const newMessages = [];
   try {
@@ -160,7 +170,9 @@ async function fetchNewMessages() {
       const ts = m.created_at || m.sent_at;
       return ts && new Date(ts) > new Date(lastChecked);
     });
-    console.log('[SMS] /messages: ' + (rawMessages ? rawMessages.length : 0) + ' total, ' + fresh.length + ' nye');
+    if (fresh.length > 0) {
+      console.log('[SMS] Fandt ' + fresh.length + ' nye beskeder');
+    }
     newMessages.push(...fresh);
   } catch (e) {
     console.error('[SMS] /messages fejl:', e.message);
@@ -168,21 +180,20 @@ async function fetchNewMessages() {
 
   try {
     const chats = await relatel.getChats({ after: lastChecked });
-    console.log('[SMS] /chats svar: ' + (chats ? chats.length : 0) + ' elementer');
-    newMessages.push(...(chats || []));
+    if (chats && chats.length > 0) {
+      newMessages.push(...chats);
+    }
   } catch (e) {
     console.error('[SMS] /chats fejl:', e.message);
   }
 
-  console.log('[SMS] Fandt ' + newMessages.length + ' nye beskeder');
   for (const msg of newMessages) {
     const nm = relatel.normalizeMessage(msg);
     if (!nm.phone_number) continue;
     const existing = nm.relatel_id ? messages.getById(nm.relatel_id) : null;
     if (existing && existing.pipedrive_note_id) continue;
-    const person = await pipedrive.findPersonByPhone(nm.phone_number);
-    if (!person) continue;
-    const { latestDealId } = await pipedrive.getPersonWithDeals(person.id);
+    const lookup = await lookupPerson(nm.phone_number);
+    if (!lookup || !lookup.personId) continue;
     messages.upsert({
       relatel_id: nm.relatel_id,
       direction: nm.direction,
@@ -190,12 +201,12 @@ async function fetchNewMessages() {
       employee_number: nm.employee_number,
       body: nm.body,
       sent_at: nm.sent_at,
-      pipedrive_person_id: person.id,
-      pipedrive_deal_id: latestDealId,
+      pipedrive_person_id: lookup.personId,
+      pipedrive_deal_id: lookup.latestDealId,
     });
     const noteId = await pipedrive.createSmsNote({
-      personId: person.id,
-      dealId: latestDealId,
+      personId: lookup.personId,
+      dealId: lookup.latestDealId,
       smsData: {
         direction: nm.direction,
         phoneNumber: nm.phone_number,
@@ -214,14 +225,15 @@ async function fetchNewMessages() {
 async function fetchNewNotes() {
   const lastChecked = state.get('last_notes_check')
     || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  console.log('[Noter] Henter kontakter fra Relatel (noter siden ' + lastChecked + ')...');
 
   try {
     const contacts = await relatel.getContacts();
+    let totalFresh = 0;
+
     for (const contact of contacts) {
       if (!contact.number) continue;
-      const person = await pipedrive.findPersonByPhone(contact.number);
-      if (!person) continue;
+
+      // Hent kommentarer FOERST - kun lav Pipedrive-opslag hvis der er nye
       const comments = await relatel.getContactComments(contact.id);
       if (!comments || comments.length === 0) continue;
 
@@ -231,7 +243,11 @@ async function fetchNewNotes() {
       });
       if (freshComments.length === 0) continue;
 
-      const { latestDealId } = await pipedrive.getPersonWithDeals(person.id);
+      // Kun nu laver vi Pipedrive-opslag (fordi der ER nye noter)
+      const lookup = await lookupPerson(contact.number);
+      if (!lookup || !lookup.personId) continue;
+
+      totalFresh += freshComments.length;
       for (const comment of freshComments) {
         const noteId = comment.id ? String(comment.id) : null;
         if (!noteId) continue;
@@ -241,8 +257,8 @@ async function fetchNewNotes() {
         const author = comment.author || comment.user || null;
         const createdAt = comment.created_at || null;
         const pdNoteId = await pipedrive.createRelatelNote({
-          personId: person.id,
-          dealId: latestDealId,
+          personId: lookup.personId,
+          dealId: lookup.latestDealId,
           noteData: {
             author: (author && typeof author === 'object') ? (author.name || author.email || null) : author,
             body,
@@ -256,13 +272,16 @@ async function fetchNewNotes() {
           author: (author && typeof author === 'object') ? (author.name || null) : author,
           body,
           created_at_rel: createdAt,
-          pipedrive_person_id: person.id,
+          pipedrive_person_id: lookup.personId,
           pipedrive_note_id: pdNoteId,
         });
         if (pdNoteId) {
-          console.log('[Noter] Note oprettet (note ' + pdNoteId + ') for kontakt ' + person.id);
+          console.log('[Noter] Note oprettet (note ' + pdNoteId + ') for kontakt ' + lookup.personId);
         }
       }
+    }
+    if (totalFresh > 0) {
+      console.log('[Noter] Behandlede ' + totalFresh + ' nye noter');
     }
   } catch (e) {
     console.error('[Noter] Fejl:', e.message);
@@ -272,17 +291,28 @@ async function fetchNewNotes() {
 
 function start() {
   const INTERVAL = config.pollIntervalSeconds || 30;
+
+  // Opkald: hvert 30. sekund
   cron.schedule('*/' + INTERVAL + ' * * * * *', async () => {
     try { await pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
   });
+
+  // SMS: hvert 30. sekund
   cron.schedule('*/30 * * * * *', async () => {
     try { await fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
   });
+
+  // Transskription: hvert minut
   cron.schedule('0 * * * * *', async () => {
-    try { await fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
     try { await processTranscriptions(); } catch (e) { console.error('[AI] Fejl:', e.message); }
   });
-  console.log('[Poll] Cron-jobs startet.');
+
+  // Noter: hvert 5. minut (behover ikke vaere hyppigere)
+  cron.schedule('0 */5 * * * *', async () => {
+    try { await fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
+  });
+
+  console.log('[Poll] Cron-jobs startet (opkald+SMS: 30s, transskription: 60s, noter: 5min).');
 }
 
 module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions };
