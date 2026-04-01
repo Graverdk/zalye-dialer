@@ -25,8 +25,6 @@ app.use(express.urlencoded({ extended: true }));
 // ============================================================
 // Statiske frontend-filer
 // ============================================================
-// Dialer floating window: GET /dialer
-app.use('/dialer', express.static(path.join(__dirname, '../frontend/dialer')));
 // Sidebar panel: GET /panel
 app.use('/panel', express.static(path.join(__dirname, '../frontend/panel')));
 
@@ -39,6 +37,7 @@ app.use('/auth', require('./routes/auth'));
 // API Routes
 // ============================================================
 app.use('/api/calls', require('./routes/calls'));
+app.use('/api/messages', require('./routes/messages'));
 
 // ============================================================
 // Health check
@@ -57,25 +56,18 @@ app.get('/health', (req, res) => {
 // ============================================================
 app.get('/manifest.json', (req, res) => {
   res.json({
-    appId: process.env.PIPEDRIVE_APP_ID || 'zalye-dialer',
-    name: 'Zalye Dialer',
-    description: 'Ring direkte fra Pipedrive via Relatel med automatisk transskription',
-    version: '1.0.0',
+    appId: process.env.PIPEDRIVE_APP_ID || 'zalye-connect',
+    name: 'Zalye Connect',
+    description: 'Synkroniser opkald, SMS og noter fra Relatel til Pipedrive',
+    version: '2.0.0',
     extensions: [
       {
-        // Floating window: aabnes naar bruger klikker telefonnummer
-        type: 'floating-window',
-        identifier: 'dialer',
-        src: `${config.appUrl}/dialer`,
-        size: { width: 340, height: 440 },
-      },
-      {
-        // Custom sidebar panel paa deals og kontakter
+        // Sidebar panel paa deals og kontakter
         type: 'panel',
-        identifier: 'opkald-panel',
+        identifier: 'kommunikation-panel',
         src: `${config.appUrl}/panel`,
         targets: ['deal', 'person'],
-        name: 'Opkald',
+        name: 'Kommunikation',
       },
     ],
   });
@@ -93,11 +85,11 @@ app.use((err, req, res, _next) => {
 // Start server
 // ============================================================
 app.listen(config.port, () => {
-  console.log(`\n Zalye Dialer koerer paa port ${config.port}`);
-  console.log(`  Dialer: ${config.appUrl}/dialer`);
-  console.log(`  Panel:  ${config.appUrl}/panel`);
-  console.log(`  Auth:   ${config.appUrl}/auth/callback`);
-  console.log(`  API:    ${config.appUrl}/api/calls\n`);
+  console.log(`\n Zalye Connect koerer paa port ${config.port}`);
+  console.log(`  Panel:    ${config.appUrl}/panel`);
+  console.log(`  Auth:     ${config.appUrl}/auth/callback`);
+  console.log(`  API:      ${config.appUrl}/api/calls`);
+  console.log(`  Messages: ${config.appUrl}/api/messages\n`);
 
   // Start polling jobs
   require('./jobs/pollCalls').start();
