@@ -7,9 +7,6 @@ const pipedrive = require('../services/pipedrive');
 const { transcribe } = require('../services/transcription');
 const claude = require('../services/claude');
 
-// -------------------------------------------------------
-// pollNewCalls
-// -------------------------------------------------------
 async function pollNewCalls() {
   const lastChecked = state.get('last_call_check') || new Date(Date.now() - 60000).toISOString();
   console.log('[Poll] Henter opkald afsluttet efter: ' + lastChecked);
@@ -21,7 +18,6 @@ async function pollNewCalls() {
     const nc = relatel.normalizeCall(rc);
     if (!nc.phone_number) continue;
 
-    // Hent fulde opkaldsdetaljer hvis listen ikke inkluderer recording_url
     if (!nc.recording_url && nc.relatel_uuid) {
       try {
         const fullCall = await relatel.getCall(nc.relatel_uuid);
@@ -31,7 +27,7 @@ async function pollNewCalls() {
             nc.recording_url = detailed.recording_url;
             console.log('[Poll] Optagelse fundet via enkelt-opkald for ' + nc.relatel_uuid);
           } else {
-            console.log('[Poll] Ingen optagelse for ' + nc.relatel_uuid + ' (rc.recording=' + JSON.stringify(fullCall.recording || null) + ')');
+            console.log('[Poll] Ingen optagelse for ' + nc.relatel_uuid);
           }
         }
       } catch (e) {
@@ -63,9 +59,6 @@ async function pollNewCalls() {
   }
 }
 
-// -------------------------------------------------------
-// processTranscriptions
-// -------------------------------------------------------
 async function processTranscriptions() {
   const pending = calls.getPendingTranscriptions();
   if (pending.length === 0) return;
@@ -78,7 +71,6 @@ async function processTranscriptions() {
 
     try {
       console.log('[AI] Downloader optagelse...');
-      // FIX: destrukturÃ©r { buffer, contentType } korrekt
       const { buffer, contentType } = await relatel.downloadRecording(call.recording_url);
       const transcription = await transcribe(buffer, contentType);
 
@@ -88,10 +80,10 @@ async function processTranscriptions() {
 
       if (transcription) {
         console.log('[AI] Analyserer med Claude...');
-        const analysis = await claude.summarizeCall(transcription, {
-          phone: call.phone_number,
+        // FIX: brug analyzeCall (ikke summarizeCall) med korrekt parameter-format
+        const analysis = await claude.analyzeCall({
+          transcription,
           direction: call.direction,
-          duration: call.duration_sec,
         });
         if (typeof analysis === 'object') {
           summary = analysis.summary || transcription;
@@ -114,11 +106,9 @@ async function processTranscriptions() {
       };
 
       if (call.pipedrive_note_id) {
-        // OPDATER eksisterende note â undgÃ¥r duplikater
         console.log('[AI] Opdaterer Pipedrive-note ' + call.pipedrive_note_id + ' med transskription...');
         await pipedrive.updateNote(call.pipedrive_note_id, { callData });
       } else if (call.pipedrive_person_id || call.pipedrive_deal_id) {
-        // Ingen eksisterende note â opret ny
         const newNoteId = await pipedrive.createCallNote({
           personId: call.pipedrive_person_id,
           dealId: call.pipedrive_deal_id,
@@ -152,23 +142,15 @@ async function processTranscriptions() {
   }
 }
 
-// -------------------------------------------------------
-// fetchNewMessages
-// -------------------------------------------------------
 async function fetchNewMessages() {
   const lastChecked = state.get('last_sms_check') || new Date(Date.now() - 60000).toISOString();
   console.log('[SMS] Henter beskeder efter: ' + lastChecked);
 
-  // DEBUG: Tjek om /messages returnerer noget (uden datofilter)
   try {
     const allMsgs = await relatel.getMessages({});
     console.log('[SMS] DEBUG /messages (ingen filter): ' + (allMsgs ? allMsgs.length : 'null') + ' beskeder totalt');
-    if (allMsgs && allMsgs.length > 0) {
-      console.log('[SMS] DEBUG fÃ¸rste besked nÃ¸gler: ' + Object.keys(allMsgs[0]).join(', '));
-      console.log('[SMS] DEBUG fÃ¸rste besked: ' + JSON.stringify(allMsgs[0]).substring(0, 300));
-    }
   } catch (e) {
-    console.error('[SMS] DEBUG /messages (ingen filter) fejl:', e.message);
+    console.error('[SMS] DEBUG fejl:', e.message);
   }
 
   const newMessages = [];
@@ -229,9 +211,6 @@ async function fetchNewMessages() {
   state.set('last_sms_check', new Date().toISOString());
 }
 
-// -------------------------------------------------------
-// fetchNewNotes
-// -------------------------------------------------------
 async function fetchNewNotes() {
   const lastChecked = state.get('last_notes_check')
     || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -291,9 +270,6 @@ async function fetchNewNotes() {
   state.set('last_notes_check', new Date().toISOString());
 }
 
-// -------------------------------------------------------
-// start()
-// -------------------------------------------------------
 function start() {
   const INTERVAL = config.pollIntervalSeconds || 30;
   cron.schedule('*/' + INTERVAL + ' * * * * *', async () => {
