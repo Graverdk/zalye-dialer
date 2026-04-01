@@ -191,29 +191,47 @@
         btnHangup.addEventListener('click', endCall);
         phoneInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') initiateCall(); });
 
-        // --- SDK: kun til initialize (st&#248;rrelse) ---
-        // page_visibility_state er den eneste gyldige listen-event i v0.13.1
-        // Vi bruger den IKKE til phone - kun URL/postMessage
+        // --- SDK: initialize + context + event listeners ---
         function initSDK() {
             log('Init SDK...');
             var SDK = window.AppExtensionsSDK;
             if (!SDK) { log('SDK mangler'); return; }
             sdk = new SDK();
             sdk.initialize({ size: { height: 400, width: 350 } })
-            .then(function() {
-                log('SDK OK');
-                // L&#230;s URL params n&#229;r SDK er klar (iframe kan f&#229; params efter init)
-                readFromURL();
-                // page_visibility_state: fyrer n&#229;r browser-tab skifter fokus
-                // (ikke n&#248;dvendig for phone, men beh&#230;ldes til fremtidig brug)
-                try {
-                    sdk.listen({
-                        event: 'page_visibility_state',
-                        callback: function(data) {
-                            log('PVS: ' + JSON.stringify(data).slice(0, 80));
-                        }
-                    });
-                } catch(e) { /* ignorer */ }
+            .then(function(ctx) {
+                log('SDK OK ctx: ' + JSON.stringify(ctx).slice(0, 120));
+                // L&#230;s URL params n&#229;r SDK er klar
+                var gotPhone = readFromURL();
+                // Hvis ingen phone fra URL, pr&#248;v SDK context
+                if (!gotPhone && ctx) {
+                    var phone = ctx.phoneNumber || ctx.phone || ctx.selectedPhone ||
+                                (ctx.resource && ctx.resource.phone) || null;
+                    if (phone) {
+                        setPhone(phone, ctx.name || ctx.personName, 'CTX');
+                    }
+                }
+                // Pr&#248;v ogs&#229; getContext for mere data
+                if (!gotPhone) {
+                    try {
+                        sdk.execute('getContext').then(function(data) {
+                            log('getCtx: ' + JSON.stringify(data).slice(0, 120));
+                            if (data && data.selectedPhone) {
+                                setPhone(data.selectedPhone, data.name, 'getCtx');
+                            }
+                        }).catch(function(e) { log('getCtx err: ' + e.message); });
+                    } catch(e) { log('getCtx N/A'); }
+                }
+                // Lyt p&#229; CALLER_DATA og PHONE events
+                var events = ['CALLER_DATA', 'phone', 'PHONE'];
+                events.forEach(function(evt) {
+                    try {
+                        sdk.listen({ event: evt, callback: function(data) {
+                            log(evt + ': ' + JSON.stringify(data).slice(0, 100));
+                            var ph = data.phoneNumber || data.phone || data.selectedPhone || data.number || null;
+                            if (ph) setPhone(ph, data.name || data.personName, evt);
+                        }});
+                    } catch(e) { /* event ikke supporteret */ }
+                });
             })
             .catch(function(err) {
                 log('SDK fejl: ' + (err.message || err));
