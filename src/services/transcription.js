@@ -9,6 +9,7 @@ const { execFileSync } = require('child_process');
 const { writeFileSync, readFileSync, unlinkSync, existsSync } = require('fs');
 const { join } = require('path');
 const { tmpdir } = require('os');
+const ffmpegPath = require('ffmpeg-static'); // Pre-built binary — ingen system-ffmpeg nødvendig
 
 let _pipeline = null;
 
@@ -33,11 +34,11 @@ function audioBufferToFloat32(audioBuffer) {
   writeFileSync(tmpIn, audioBuffer);
 
   try {
-    execFileSync('ffmpeg', [
+    execFileSync(ffmpegPath, [
       '-i', tmpIn,
-      '-ar', '16000',   // 16 kHz samplingsrate
-      '-ac', '1',       // mono
-      '-f', 'f32le',    // 32-bit float little-endian (Whisper-format)
+      '-ar', '16000', // 16 kHz samplingsrate
+      '-ac', '1',     // mono
+      '-f', 'f32le',  // 32-bit float little-endian (Whisper-format)
       '-y', tmpOut,
     ], { stdio: 'pipe' });
 
