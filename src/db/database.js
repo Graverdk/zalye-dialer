@@ -130,6 +130,52 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_outcomes_deal    ON deal_outcomes(pipedrive_deal_id);
   CREATE INDEX IF NOT EXISTS idx_outcomes_outcome ON deal_outcomes(outcome);
 
+  -- ============================================================
+  -- SMS-beskeder fra Relatel
+  -- ============================================================
+  CREATE TABLE IF NOT EXISTS messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    relatel_id      TEXT UNIQUE,
+    direction       TEXT NOT NULL,          -- 'incoming' | 'outgoing'
+    phone_number    TEXT NOT NULL,          -- ekstern part's nummer
+    employee_number TEXT,
+    body            TEXT,
+    sent_at         TEXT,
+
+    -- Pipedrive kobling
+    pipedrive_person_id  INTEGER,
+    pipedrive_deal_id    INTEGER,
+    pipedrive_note_id    INTEGER,           -- ID på Pipedrive-note oprettet for denne SMS
+
+    created_at      INTEGER DEFAULT (strftime('%s', 'now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_messages_phone    ON messages(phone_number);
+  CREATE INDEX IF NOT EXISTS idx_messages_person   ON messages(pipedrive_person_id);
+  CREATE INDEX IF NOT EXISTS idx_messages_sent     ON messages(sent_at);
+
+  -- ============================================================
+  -- Noter/kommentarer fra Relatel kontakter
+  -- ============================================================
+  CREATE TABLE IF NOT EXISTS relatel_notes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    relatel_id      TEXT UNIQUE,
+    relatel_contact_id TEXT,
+    phone_number    TEXT,
+    author          TEXT,
+    body            TEXT,
+    created_at_rel  TEXT,                   -- tidsstempel fra Relatel
+
+    -- Pipedrive kobling
+    pipedrive_person_id  INTEGER,
+    pipedrive_note_id    INTEGER,
+
+    created_at      INTEGER DEFAULT (strftime('%s', 'now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_rnotes_phone   ON relatel_notes(phone_number);
+  CREATE INDEX IF NOT EXISTS idx_rnotes_person  ON relatel_notes(pipedrive_person_id);
+
   -- Systemstate: gemmer hvornår vi sidst pollede
   CREATE TABLE IF NOT EXISTS system_state (
     key   TEXT PRIMARY KEY,
@@ -412,6 +458,132 @@ const dealOutcomes = {
   },
 };
 
+// ============================================================
+// SMS-besked hjælpefunktioner
+// ============================================================
+const messages = {
+  upsert(msgData) {
+    const stmt = db.prepare(`
+      INSERT INTO messages (
+        relatel_id, direction, phone_number, employee_number,
+        body, sent_at, pipedrive_person_id, pipedrive_deal_id
+      ) VALUES (
+        @relatel_id, @direction, @phone_number, @employee_number,
+        @body, @sent_at, @pipedrive_person_id, @pipedrive_deal_id
+      )
+      ON CONFLICT(relatel_id) DO UPDATE SET
+        pipedrive_person_id = COALESCE(excluded.pipedrive_person_id, pipedrive_person_id),
+        pipedrive_deal_id   = COALESCE(excluded.pipedrive_deal_id, pipedrive_deal_id)
+    `);
+    return stmt.run({
+      relatel_id: msgData.relatel_id,
+      direction: msgData.direction,
+      phone_number: msgData.phone_number,
+      employee_number: msgData.employee_number || null,
+      body: msgData.body || null,
+      sent_at: msgData.sent_at || null,
+      pipedrive_person_id: msgData.pipedrive_person_id || null,
+      pipedrive_deal_id: msgData.pipedrive_deal_id || null,
+    });
+  },
+
+  getById(relatelId) {
+    return db.prepare('SELECT * FROM messages WHERE relatel_id = ?').get(relatelId);
+  },
+
+  getByPersonId(personId, limit = 50) {
+    return db.prepare(`
+      SELECT * FROM messages
+      WHERE pipedrive_person_id = ?
+      ORDER BY sent_at DESC
+      LIMIT ?
+    `).all(personId, limit);
+  },
+
+  getByDealId(dealId, limit = 50) {
+    return db.prepare(`
+      SELECT * FROM messages
+      WHERE pipedrive_deal_id = ?
+      ORDER BY sent_at DESC
+      LIMIT ?
+    `).all(dealId, limit);
+  },
+
+  getByPhone(phoneNumber, limit = 50) {
+    const normalized = phoneNumber.replace(/^(\+|00)/, '');
+    return db.prepare(`
+      SELECT * FROM messages
+      WHERE phone_number LIKE ?
+      ORDER BY sent_at DESC
+      LIMIT ?
+    `).all(`%${normalized}`, limit);
+  },
+
+  setNoteId(relatelId, noteId) {
+    return db.prepare('UPDATE messages SET pipedrive_note_id = ? WHERE relatel_id = ?').run(noteId, relatelId);
+  },
+
+  getUnlinked(limit = 50) {
+    return db.prepare(`
+      SELECT * FROM messages
+      WHERE pipedrive_person_id IS NULL
+      ORDER BY sent_at DESC LIMIT ?
+    `).all(limit);
+  },
+};
+
+// ============================================================
+// Relatel noter hjælpefunktioner
+// ============================================================
+const relatelNotes = {
+  upsert(noteData) {
+    return db.prepare(`
+      INSERT INTO relatel_notes (
+        relatel_id, relatel_contact_id, phone_number, author, body,
+        created_at_rel, pipedrive_person_id, pipedrive_note_id
+      ) VALUES (
+        @relatel_id, @relatel_contact_id, @phone_number, @author, @body,
+        @created_at_rel, @pipedrive_person_id, @pipedrive_note_id
+      )
+      ON CONFLICT(relatel_id) DO UPDATE SET
+        pipedrive_person_id = COALESCE(excluded.pipedrive_person_id, pipedrive_person_id),
+        pipedrive_note_id   = COALESCE(excluded.pipedrive_note_id, pipedrive_note_id)
+    `).run({
+      relatel_id: noteData.relatel_id,
+      relatel_contact_id: noteData.relatel_contact_id || null,
+      phone_number: noteData.phone_number || null,
+      author: noteData.author || null,
+      body: noteData.body || null,
+      created_at_rel: noteData.created_at_rel || null,
+      pipedrive_person_id: noteData.pipedrive_person_id || null,
+      pipedrive_note_id: noteData.pipedrive_note_id || null,
+    });
+  },
+
+  getById(relatelId) {
+    return db.prepare('SELECT * FROM relatel_notes WHERE relatel_id = ?').get(relatelId);
+  },
+
+  getByPersonId(personId, limit = 50) {
+    return db.prepare(`
+      SELECT * FROM relatel_notes
+      WHERE pipedrive_person_id = ?
+      ORDER BY created_at_rel DESC
+      LIMIT ?
+    `).all(personId, limit);
+  },
+
+  getByPhone(phoneNumber, limit = 50) {
+    const normalized = phoneNumber.replace(/^(\+|00)/, '');
+    return db.prepare(`
+      SELECT * FROM relatel_notes
+      WHERE phone_number LIKE ?
+      ORDER BY created_at_rel DESC
+      LIMIT ?
+    `).all(`%${normalized}`, limit);
+  },
+};
+
 const state = {
   get(key) {
     const row = db.prepare('SELECT value FROM system_state WHERE key = ?').get(key);
@@ -425,4 +597,4 @@ const state = {
   },
 };
 
-module.exports = { db, calls, insights, dealOutcomes, state };
+module.exports = { db, calls, messages, relatelNotes, insights, dealOutcomes, state };
