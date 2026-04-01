@@ -204,27 +204,43 @@ async function processTranscriptions() {
 
 // ============================================================
 // Hent nye SMS-beskeder fra Relatel
+// Tjekker både /messages og /chats (desktop app SMS bruger /chats)
 // ============================================================
 async function fetchNewMessages() {
   const lastPoll = state.get('last_sms_poll_time') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   console.log(`[SMS] Henter beskeder efter: ${lastPoll}`);
 
-  let allMessages = [];
-  try {
-    allMessages = await relatel.getMessages({ after: lastPoll, limit: 50 });
-  } catch (err) {
-    console.error('[SMS] Fejl ved hentning fra Relatel:', err.message);
-    return;
-  }
-
   state.set('last_sms_poll_time', new Date().toISOString());
 
-  if (!Array.isArray(allMessages)) {
-    console.log('[SMS] Uventet svar:', typeof allMessages);
-    return;
+  // Hent fra /messages (API-sendte beskeder)
+  let allMessages = [];
+  try {
+    const fromMessages = await relatel.getMessages({ after: lastPoll, limit: 50 });
+    if (Array.isArray(fromMessages)) allMessages.push(...fromMessages);
+    console.log(`[SMS] /messages: ${fromMessages.length || 0} beskeder`);
+  } catch (err) {
+    console.log('[SMS] /messages ikke tilgængeligt:', err.message);
   }
 
-  console.log(`[SMS] Fandt ${allMessages.length} beskeder`);
+  // Hent fra /chats (desktop app SMS tråde)
+  try {
+    const recentChats = await relatel.getChats({ after: lastPoll, limit: 50 });
+    if (Array.isArray(recentChats)) {
+      for (const chat of recentChats) {
+        // Udtræk beskeder fra chat-objektet (de kan ligge i .messages eller .last_message)
+        const chatMsgs = chat.messages || (chat.last_message ? [chat.last_message] : []);
+        const phone = (chat.remote_number || chat.contact_number || chat.phone || '').replace(/^(\+|00)/, '');
+        for (const m of chatMsgs) {
+          allMessages.push({ ...m, remote_number: phone || m.remote_number, _from_chat: chat.uuid || chat.id });
+        }
+      }
+      console.log(`[SMS] /chats: ${recentChats.length} tråde`);
+    }
+  } catch (err) {
+    console.log('[SMS] /chats ikke tilgængeligt:', err.message);
+  }
+
+  console.log(`[SMS] Fandt ${allMessages.length} beskeder i alt`);
 
   for (const msg of allMessages) {
     try {
