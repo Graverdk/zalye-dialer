@@ -98,6 +98,7 @@ async function processTranscriptions() {
       let summary = transcription;
       let actionPoints = null;
       let topics = null;
+      let diarizedTranscription = null;
 
       if (transcription) {
         console.log('[AI] Analyserer med Claude...');
@@ -109,6 +110,7 @@ async function processTranscriptions() {
           summary = analysis.summary || transcription;
           actionPoints = analysis.actionPoints || null;
           topics = analysis.topics || null;
+          diarizedTranscription = analysis.diarizedTranscription || null;
         } else {
           summary = analysis || transcription;
         }
@@ -123,6 +125,7 @@ async function processTranscriptions() {
         actionPoints,
         topics,
         transcription,
+        diarizedTranscription,
       };
 
       if (call.pipedrive_note_id) {
