@@ -30,18 +30,18 @@ async function getPersonWithDeals(personId) {
 }
 
 function buildCallNoteContent({ direction, phoneNumber, startedAt, durationSec, summary, actionPoints, topics, transcription }) {
-  const dirLabel = direction === 'outgoing' ? 'UdgÃ¥ende' : 'IndgÃ¥ende';
-  const date = startedAt ? new Date(startedAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : 'â';
+  const dirLabel = direction === 'outgoing' ? 'Udg\u00e5ende' : 'Indg\u00e5ende';
+  const date = startedAt ? new Date(startedAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : '\u2014';
   const min = Math.floor((durationSec || 0) / 60);
   const sec = (durationSec || 0) % 60;
   const durStr = `${min}m ${sec}s`;
 
-  let content = `## Opkald â ${dirLabel}\n`;
+  let content = `## Opkald \u2014 ${dirLabel}\n`;
   content += `**Tidspunkt:** ${date}\n`;
-  content += `**Nummer:** ${phoneNumber || 'â'}\n`;
+  content += `**Nummer:** ${phoneNumber || '\u2014'}\n`;
   content += `**Varighed:** ${durStr}\n\n`;
 
-  if (summary) content += `### ResumÃ©\n${summary}\n\n`;
+  if (summary) content += `### Resum\u00e9\n${summary}\n\n`;
   if (actionPoints && actionPoints.length > 0) {
     content += `### Handlingspunkter\n${actionPoints.map(a => `- ${a}`).join('\n')}\n\n`;
   }
@@ -105,11 +105,11 @@ async function createCallActivity({ dealId, personId, subject, durationSec, done
 async function createSmsNote({ personId, dealId, smsData }) {
   const { direction, phoneNumber, body: msgBody, sentAt } = smsData;
   const dirLabel = direction === 'outgoing' ? 'Sendt' : 'Modtaget';
-  const date = sentAt ? new Date(sentAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : 'â';
+  const date = sentAt ? new Date(sentAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : '\u2014';
 
-  let content = `## SMS â ${dirLabel}\n`;
+  let content = `## SMS \u2014 ${dirLabel}\n`;
   content += `**Tidspunkt:** ${date}\n`;
-  content += `**Nummer:** ${phoneNumber || 'â'}\n\n`;
+  content += `**Nummer:** ${phoneNumber || '\u2014'}\n\n`;
   content += msgBody || '(tom besked)';
 
   const noteBody = { content };
@@ -127,7 +127,7 @@ async function createSmsNote({ personId, dealId, smsData }) {
 
 async function createRelatelNote({ personId, dealId, noteData }) {
   const { author, body: noteBody, createdAt } = noteData;
-  const date = createdAt ? new Date(createdAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : 'â';
+  const date = createdAt ? new Date(createdAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : '\u2014';
 
   let content = `## Note\n`;
   content += `**Dato:** ${date}\n`;
