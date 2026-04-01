@@ -56,10 +56,12 @@ async function pollNewCalls() {
     }
 
     calls.upsert(nc);
+
     const lookup = await lookupPerson(nc.phone_number);
     if (!lookup || !lookup.personId) continue;
     const existing = calls.getByUuid(nc.relatel_uuid);
     if (existing && existing.pipedrive_note_id) continue;
+
     const noteId = await pipedrive.createCallNote({
       personId: lookup.personId,
       dealId: lookup.latestDealId,
@@ -148,7 +150,6 @@ async function processTranscriptions() {
         pipedriveNoteId: call.pipedrive_note_id,
       });
       console.log('[AI] Faerdig: ' + call.relatel_uuid);
-
     } catch (err) {
       console.error('[AI] Fejl ved transskription: ' + err.message);
       calls.updateTranscription(call.relatel_uuid, {
@@ -161,29 +162,11 @@ async function processTranscriptions() {
 }
 
 async function fetchNewMessages() {
-  // Hent ALLE beskeder fra Relatel (uden datofilter)
-  // og sammenlign med database for at finde nye
   const newMessages = [];
   try {
     const rawMessages = await relatel.getMessages({});
     console.log('[SMS] /messages returnerede ' + (rawMessages || []).length + ' beskeder');
 
-    // Engangsdump af beskeddetaljer (foerste kald efter deploy)
-    const debugDone = state.get('sms_debug_done');
-    if (!debugDone && rawMessages && rawMessages.length > 0) {
-      for (const m of rawMessages) {
-        console.log('[SMS] Besked: id=' + (m.id || 'null') +
-          ' direction=' + (m.direction || '?') +
-          ' from=' + (m.from_number || '?') +
-          ' to=' + (m.to_number || '?') +
-          ' body=' + (m.body || '').substring(0, 50) +
-          ' created=' + (m.created_at || '?') +
-          ' endpoint=' + (m.endpoint || '?'));
-      }
-      state.set('sms_debug_done', '1');
-    }
-
-    // Filtrer mod database - kun behold beskeder vi ikke allerede har synket
     for (const m of (rawMessages || [])) {
       const msgId = m.id ? String(m.id) : null;
       if (!msgId) continue;
@@ -191,7 +174,6 @@ async function fetchNewMessages() {
       if (existing && existing.pipedrive_note_id) continue;
       newMessages.push(m);
     }
-
     if (newMessages.length > 0) {
       console.log('[SMS] ' + newMessages.length + ' nye/usynkede beskeder fundet');
     }
@@ -202,8 +184,10 @@ async function fetchNewMessages() {
   for (const msg of newMessages) {
     const nm = relatel.normalizeMessage(msg);
     if (!nm.phone_number) continue;
+
     const lookup = await lookupPerson(nm.phone_number);
     if (!lookup || !lookup.personId) continue;
+
     messages.upsert({
       relatel_id: nm.relatel_id,
       direction: nm.direction,
@@ -214,6 +198,7 @@ async function fetchNewMessages() {
       pipedrive_person_id: lookup.personId,
       pipedrive_deal_id: lookup.latestDealId,
     });
+
     const noteId = await pipedrive.createSmsNote({
       personId: lookup.personId,
       dealId: lookup.latestDealId,
@@ -232,17 +217,13 @@ async function fetchNewMessages() {
 }
 
 async function fetchNewNotes() {
-  const lastChecked = state.get('last_notes_check')
-    || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-
+  const lastChecked = state.get('last_notes_check') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   try {
     const contacts = await relatel.getContacts();
     let totalFresh = 0;
 
     for (const contact of contacts) {
       if (!contact.number) continue;
-
-      // Hent kommentarer FOERST - kun lav Pipedrive-opslag hvis der er nye
       const comments = await relatel.getContactComments(contact.id);
       if (!comments || comments.length === 0) continue;
 
@@ -252,19 +233,21 @@ async function fetchNewNotes() {
       });
       if (freshComments.length === 0) continue;
 
-      // Kun nu laver vi Pipedrive-opslag (fordi der ER nye noter)
       const lookup = await lookupPerson(contact.number);
       if (!lookup || !lookup.personId) continue;
-
       totalFresh += freshComments.length;
+
       for (const comment of freshComments) {
         const noteId = comment.id ? String(comment.id) : null;
         if (!noteId) continue;
+
         const existing = relatelNotes.getById(noteId);
         if (existing && existing.pipedrive_note_id) continue;
+
         const body = comment.body || comment.text || comment.comment || '';
         const author = comment.author || comment.user || null;
         const createdAt = comment.created_at || null;
+
         const pdNoteId = await pipedrive.createRelatelNote({
           personId: lookup.personId,
           dealId: lookup.latestDealId,
@@ -274,6 +257,7 @@ async function fetchNewNotes() {
             createdAt,
           },
         });
+
         relatelNotes.upsert({
           relatel_id: noteId,
           relatel_contact_id: String(contact.id),
@@ -284,6 +268,7 @@ async function fetchNewNotes() {
           pipedrive_person_id: lookup.personId,
           pipedrive_note_id: pdNoteId,
         });
+
         if (pdNoteId) {
           console.log('[Noter] Note oprettet (note ' + pdNoteId + ') for kontakt ' + lookup.personId);
         }
@@ -298,6 +283,57 @@ async function fetchNewNotes() {
   state.set('last_notes_check', new Date().toISOString());
 }
 
+// ============================================================
+// Kontakt-berigelse: Pipedrive -> Relatel
+// ============================================================
+async function enrichContacts() {
+  try {
+    const contacts = await relatel.getContacts({ limit: 200 });
+    let enriched = 0;
+
+    for (const contact of contacts) {
+      if (!contact.number) continue;
+      // Spring over hvis kontakten allerede har et rigtigt navn (ikke bare et nummer)
+      if (contact.name && !/^\+?\d[\d\s\-().]+$/.test(contact.name.trim())) continue;
+
+      // Slaa op i Pipedrive
+      const person = await pipedrive.findPersonByPhone(contact.number);
+      if (!person) continue;
+
+      // Hent fulde persondetaljer (navn, firma, email)
+      const details = await pipedrive.getPersonById(person.id);
+      if (!details || !details.name) continue;
+
+      // Byg visningsnavn: "Navn (Firma)"
+      const orgName = (details.org_id && details.org_id.name) || null;
+      const displayName = orgName
+        ? details.name + ' (' + orgName + ')'
+        : details.name;
+
+      const email = (details.email && details.email.length > 0)
+        ? details.email[0].value
+        : null;
+
+      // Opdater Relatel-kontakt
+      await relatel.updateContact(contact.id, {
+        name: displayName,
+        email: email,
+      });
+
+      enriched++;
+      console.log('[Enrich] ' + contact.number + ' -> ' + displayName + (email ? ' (' + email + ')' : ''));
+    }
+
+    if (enriched > 0) {
+      console.log('[Enrich] Berigede ' + enriched + ' kontakter');
+    } else {
+      console.log('[Enrich] Ingen kontakter at berige');
+    }
+  } catch (e) {
+    console.error('[Enrich] Fejl:', e.message);
+  }
+}
+
 function start() {
   const INTERVAL = config.pollIntervalSeconds || 30;
 
@@ -306,7 +342,7 @@ function start() {
     try { await pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
   });
 
-  // SMS: hvert minut (sammenligner mod DB, ikke tidsfilter)
+  // SMS: hvert minut
   cron.schedule('0 * * * * *', async () => {
     try { await fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
   });
@@ -316,12 +352,17 @@ function start() {
     try { await processTranscriptions(); } catch (e) { console.error('[AI] Fejl:', e.message); }
   });
 
-  // Noter: hvert 5. minut (behover ikke vaere hyppigere)
+  // Noter: hvert 5. minut
   cron.schedule('0 */5 * * * *', async () => {
     try { await fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
   });
 
-  console.log('[Poll] Cron-jobs startet (opkald: 30s, SMS: 60s, transskription: 60s, noter: 5min).');
+  // Kontakt-berigelse: hvert 5. minut (test), skift til daglig senere
+  cron.schedule('15 */5 * * * *', async () => {
+    try { await enrichContacts(); } catch (e) { console.error('[Enrich] Fejl:', e.message); }
+  });
+
+  console.log('[Poll] Cron-jobs startet (opkald: 30s, SMS: 60s, transskription: 60s, noter: 5min, berigelse: 5min).');
 }
 
-module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions };
+module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions, enrichContacts };
