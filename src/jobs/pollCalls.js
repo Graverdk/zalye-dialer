@@ -2,159 +2,219 @@
 
 const cron = require('node-cron');
 const config = require('../config');
-const { db } = require('../db/database');
+const { db, calls, messages, relatelNotes, state } = require('../db/database');
 const relatel = require('../services/relatel');
 const pipedrive = require('../services/pipedrive');
 const { transcribe } = require('../services/transcription');
 const claude = require('../services/claude');
 
 // -------------------------------------------------------
-// Opret tabeller hvis de ikke findes
+// pollNewCalls
 // -------------------------------------------------------
-db.prepare(`CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,
-  value TEXT
-)`).run();
+async function pollNewCalls() {
+  const lastChecked = state.get('last_call_check') || new Date(Date.now() - 60000).toISOString();
+  console.log('[Poll] Henter opkald afsluttet efter: ' + lastChecked);
 
-db.prepare(`CREATE TABLE IF NOT EXISTS synced_notes (
-  relatel_note_id INTEGER PRIMARY KEY,
-  pipedrive_note_id INTEGER,
-  synced_at TEXT DEFAULT (datetime('now'))
-)`).run();
+  const rawCalls = await relatel.getCalls({ endedAfter: lastChecked });
+  console.log('[Poll] Fandt ' + rawCalls.length + ' afsluttede opkald');
 
-// -------------------------------------------------------
-// linkToPipedrive — opret opkaldsnote i Pipedrive (én gang)
-// -------------------------------------------------------
-async function linkToPipedrive(normalizedCall) {
-  if (!normalizedCall.phone) return;
+  state.set('last_call_check', new Date().toISOString());
 
-  const person = await pipedrive.findPersonByPhone(normalizedCall.phone);
-  if (!person) return;
+  for (const rc of rawCalls) {
+    const nc = relatel.normalizeCall(rc);
+    if (!nc.phone_number) continue;
 
-  const existing = db.prepare('SELECT pipedrive_note_id FROM calls WHERE relatel_uuid = ?')
-    .get(normalizedCall.relatel_uuid);
+    calls.upsert(nc);
 
-  if (existing && existing.pipedrive_note_id) return;
+    const person = await pipedrive.findPersonByPhone(nc.phone_number);
+    if (!person) continue;
 
-  const noteId = await pipedrive.createCallNote({
-    personId:  person.id,
-    phone:     normalizedCall.phone,
-    direction: normalizedCall.direction,
-    duration:  normalizedCall.duration,
-    startedAt: normalizedCall.started_at,
-  });
+    const existing = calls.getByUuid(nc.relatel_uuid);
+    if (existing && existing.pipedrive_note_id) continue;
 
-  if (noteId) {
-    db.prepare('UPDATE calls SET pipedrive_note_id = ?, pipedrive_person_id = ? WHERE relatel_uuid = ?')
-      .run(noteId, person.id, normalizedCall.relatel_uuid);
-    console.log(`[Poll] ✅ Opkaldsnote oprettet i Pipedrive (note ${noteId}) for ${normalizedCall.phone}`);
-  }
-}
+    const { latestDealId } = await pipedrive.getPersonWithDeals(person.id);
 
-// -------------------------------------------------------
-// processTranscriptions — Whisper + Claude (uden race condition)
-// -------------------------------------------------------
-async function processTranscriptions() {
-  const pending = db.prepare(
-    "SELECT * FROM calls WHERE transcription_status = 'pending' AND recording_url IS NOT NULL"
-  ).all();
+    const noteId = await pipedrive.createCallNote({
+      personId: person.id,
+      dealId: latestDealId,
+      callData: {
+        direction: nc.direction,
+        phoneNumber: nc.phone_number,
+        startedAt: nc.started_at,
+        durationSec: nc.duration_sec,
+      },
+    });
 
-  if (pending.length === 0) return;
-  console.log(`[AI] Behandler ${pending.length} opkald...`);
-
-  for (const call of pending) {
-    // Sæt 'processing' STRAKS inden async-arbejde starter
-    db.prepare("UPDATE calls SET transcription_status = 'processing' WHERE relatel_uuid = ?")
-      .run(call.relatel_uuid);
-
-    console.log(`[AI] Behandler: ${call.relatel_uuid}`);
-
-    try {
-      console.log('[AI] Downloader optagelse...');
-      const audioBuffer = await relatel.downloadRecording(call.recording_url);
-
-      const transcription = await transcribe(audioBuffer);
-
-      let summary = transcription;
-      if (transcription) {
-        console.log('[AI] Analyserer med Claude...');
-        summary = await claude.summarizeCall(transcription, {
-          phone:     call.phone,
-          direction: call.direction,
-          duration:  call.duration,
-        });
-      }
-
-      if (summary && call.pipedrive_note_id) {
-        await pipedrive.updateNoteWithTranscription(call.pipedrive_note_id, summary);
-      }
-
-      db.prepare("UPDATE calls SET transcription_status = 'done', transcription = ? WHERE relatel_uuid = ?")
-        .run(summary || '', call.relatel_uuid);
-      console.log(`[AI] ✅ Færdig: ${call.relatel_uuid}`);
-
-    } catch (err) {
-      console.log(`[AI] Transskription sprunget over: ${err.message}`);
-      db.prepare("UPDATE calls SET transcription_status = 'done' WHERE relatel_uuid = ?")
-        .run(call.relatel_uuid);
-      console.log(`[AI] ✅ Færdig: ${call.relatel_uuid}`);
+    if (noteId) {
+      db.prepare('UPDATE calls SET pipedrive_note_id = ?, pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
+        .run(noteId, person.id, latestDealId, nc.relatel_uuid);
+      console.log('[Poll] Opkaldsnote oprettet (note ' + noteId + ') for ' + nc.phone_number);
     }
   }
 }
 
 // -------------------------------------------------------
-// fetchNewMessages — SMS via /messages + /chats
+// processTranscriptions
+// -------------------------------------------------------
+async function processTranscriptions() {
+  const pending = calls.getPendingTranscriptions();
+  if (pending.length === 0) return;
+
+  console.log('[AI] Behandler ' + pending.length + ' opkald...');
+
+  for (const call of pending) {
+    db.prepare("UPDATE calls SET transcription_status = 'processing' WHERE relatel_uuid = ?")
+      .run(call.relatel_uuid);
+
+    console.log('[AI] Behandler: ' + call.relatel_uuid);
+
+    try {
+      console.log('[AI] Downloader optagelse...');
+      const audioData = await relatel.downloadRecording(call.recording_url);
+      const transcription = await transcribe(audioData);
+
+      let summary = transcription;
+      let actionPoints = null;
+      let topics = null;
+
+      if (transcription) {
+        console.log('[AI] Analyserer med Claude...');
+        const analysis = await claude.summarizeCall(transcription, {
+          phone: call.phone_number,
+          direction: call.direction,
+          duration: call.duration_sec,
+        });
+
+        if (typeof analysis === 'object') {
+          summary = analysis.summary || transcription;
+          actionPoints = analysis.actionPoints || null;
+          topics = analysis.topics || null;
+        } else {
+          summary = analysis || transcription;
+        }
+      }
+
+      if (call.pipedrive_note_id) {
+        const personObj = call.pipedrive_person_id ? { id: call.pipedrive_person_id } : null;
+        const dealInfo = personObj ? await pipedrive.getPersonWithDeals(personObj.id) : { latestDealId: null };
+
+        await pipedrive.createCallNote({
+          personId: call.pipedrive_person_id,
+          dealId: dealInfo.latestDealId || call.pipedrive_deal_id,
+          callData: {
+            direction: call.direction,
+            phoneNumber: call.phone_number,
+            startedAt: call.started_at,
+            durationSec: call.duration_sec,
+            summary: summary,
+            actionPoints: actionPoints,
+            topics: topics,
+            transcription: transcription,
+          },
+        });
+      }
+
+      calls.updateTranscription(call.relatel_uuid, {
+        status: 'done',
+        transcription: transcription,
+        summary: summary,
+        actionPoints: actionPoints,
+        topics: topics,
+        pipedriveNoteId: call.pipedrive_note_id,
+      });
+
+      console.log('[AI] Faerdig: ' + call.relatel_uuid);
+    } catch (err) {
+      console.error('[AI] Fejl ved transskription: ' + err.message);
+      calls.updateTranscription(call.relatel_uuid, {
+        status: 'done',
+        transcription: null,
+        summary: null,
+      });
+    }
+  }
+}
+
+// -------------------------------------------------------
+// fetchNewMessages
 // -------------------------------------------------------
 async function fetchNewMessages() {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'last_sms_check'").get();
-  const lastChecked = row ? row.value : new Date(Date.now() - 60000).toISOString();
-  console.log(`[SMS] Henter beskeder efter: ${lastChecked}`);
+  const lastChecked = state.get('last_sms_check') || new Date(Date.now() - 60000).toISOString();
+  console.log('[SMS] Henter beskeder efter: ' + lastChecked);
 
   const newMessages = [];
 
   try {
-    const messages = await relatel.getMessages();
-    const fresh = (messages || []).filter(m => new Date(m.created_at) > new Date(lastChecked));
-    console.log(`[SMS] /messages: ${messages?.length || 0} total, ${fresh.length} nye`);
-    newMessages.push(...fresh);
-  } catch (e) { console.error('[SMS] /messages fejl:', e.message); }
-
-  try {
-    const chats = await relatel.getChats();
-    console.log(`[SMS] /chats svar: ${chats?.length || 0} elementer`);
-    const freshChats = (chats || []).filter(c => {
-      const ts = c.created_at || c.updated_at || c.last_message_at;
+    const rawMessages = await relatel.getMessages({ after: lastChecked });
+    const fresh = (rawMessages || []).filter(m => {
+      const ts = m.created_at || m.sent_at;
       return ts && new Date(ts) > new Date(lastChecked);
     });
-    newMessages.push(...freshChats);
-  } catch (e) { console.error('[SMS] /chats fejl:', e.message); }
-
-  console.log(`[SMS] Fandt ${newMessages.length} nye beskeder`);
-
-  for (const msg of newMessages) {
-    const phone = msg.from_number || msg.from || msg.number;
-    if (!phone) continue;
-    const person = await pipedrive.findPersonByPhone(phone);
-    if (!person) continue;
-    await pipedrive.createSmsNote({
-      personId:  person.id,
-      phone,
-      body:      msg.body || msg.text || msg.message || '',
-      direction: msg.direction || 'incoming',
-      createdAt: msg.created_at,
-    });
-    console.log(`[SMS] ✅ SMS-note oprettet i Pipedrive for ${phone}`);
+    console.log('[SMS] /messages: ' + (rawMessages ? rawMessages.length : 0) + ' total, ' + fresh.length + ' nye');
+    newMessages.push(...fresh);
+  } catch (e) {
+    console.error('[SMS] /messages fejl:', e.message);
   }
 
-  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_sms_check', ?)")
-    .run(new Date().toISOString());
+  try {
+    const chats = await relatel.getChats({ after: lastChecked });
+    console.log('[SMS] /chats svar: ' + (chats ? chats.length : 0) + ' elementer');
+    newMessages.push(...(chats || []));
+  } catch (e) {
+    console.error('[SMS] /chats fejl:', e.message);
+  }
+
+  console.log('[SMS] Fandt ' + newMessages.length + ' nye beskeder');
+
+  for (const msg of newMessages) {
+    const nm = relatel.normalizeMessage(msg);
+    if (!nm.phone_number) continue;
+
+    const existing = nm.relatel_id ? messages.getById(nm.relatel_id) : null;
+    if (existing && existing.pipedrive_note_id) continue;
+
+    const person = await pipedrive.findPersonByPhone(nm.phone_number);
+    if (!person) continue;
+
+    const { latestDealId } = await pipedrive.getPersonWithDeals(person.id);
+
+    messages.upsert({
+      relatel_id: nm.relatel_id,
+      direction: nm.direction,
+      phone_number: nm.phone_number,
+      employee_number: nm.employee_number,
+      body: nm.body,
+      sent_at: nm.sent_at,
+      pipedrive_person_id: person.id,
+      pipedrive_deal_id: latestDealId,
+    });
+
+    const noteId = await pipedrive.createSmsNote({
+      personId: person.id,
+      dealId: latestDealId,
+      smsData: {
+        direction: nm.direction,
+        phoneNumber: nm.phone_number,
+        body: nm.body,
+        sentAt: nm.sent_at,
+      },
+    });
+
+    if (noteId && nm.relatel_id) {
+      messages.setNoteId(nm.relatel_id, noteId);
+      console.log('[SMS] SMS-note oprettet (note ' + noteId + ') for ' + nm.phone_number);
+    }
+  }
+
+  state.set('last_sms_check', new Date().toISOString());
 }
 
 // -------------------------------------------------------
-// fetchNewNotes — Relatel-noter → Pipedrive (ingen dubletter)
+// fetchNewNotes
 // -------------------------------------------------------
 async function fetchNewNotes() {
   console.log('[Noter] Henter kontakter fra Relatel...');
+
   try {
     const contacts = await relatel.getContacts();
 
@@ -164,27 +224,45 @@ async function fetchNewNotes() {
       const person = await pipedrive.findPersonByPhone(contact.number);
       if (!person) continue;
 
-      // Brug getComments (det faktiske funktionsnavn i relatel.js)
-      const notes = await relatel.getComments(contact.id);
-      if (!notes || notes.length === 0) continue;
+      const comments = await relatel.getContactComments(contact.id);
+      if (!comments || comments.length === 0) continue;
 
-      for (const note of notes) {
-        if (!note.id) continue;
+      const { latestDealId } = await pipedrive.getPersonWithDeals(person.id);
 
-        // Deduplication via SQLite
-        const already = db.prepare('SELECT 1 FROM synced_notes WHERE relatel_note_id = ?').get(note.id);
-        if (already) continue;
+      for (const comment of comments) {
+        const noteId = comment.id ? String(comment.id) : null;
+        if (!noteId) continue;
 
-        const body = note.body || note.text || note.comment || '';
-        const noteId = await pipedrive.createNote({
+        const existing = relatelNotes.getById(noteId);
+        if (existing && existing.pipedrive_note_id) continue;
+
+        const body = comment.body || comment.text || comment.comment || '';
+        const author = comment.author || comment.user || null;
+        const createdAt = comment.created_at || null;
+
+        const pdNoteId = await pipedrive.createRelatelNote({
           personId: person.id,
-          content:  `## Note\n**Dato:** ${new Date(note.created_at).toLocaleString('da-DK')}\n${body}`,
+          dealId: latestDealId,
+          noteData: {
+            author: typeof author === 'object' ? (author.name || author.email || null) : author,
+            body: body,
+            createdAt: createdAt,
+          },
         });
 
-        if (noteId) {
-          db.prepare('INSERT OR IGNORE INTO synced_notes (relatel_note_id, pipedrive_note_id) VALUES (?, ?)')
-            .run(note.id, noteId);
-          console.log(`[Noter] ✅ Note oprettet i Pipedrive for kontakt ${person.id}`);
+        relatelNotes.upsert({
+          relatel_id: noteId,
+          relatel_contact_id: String(contact.id),
+          phone_number: contact.number,
+          author: typeof author === 'object' ? (author.name || null) : author,
+          body: body,
+          created_at_rel: createdAt,
+          pipedrive_person_id: person.id,
+          pipedrive_note_id: pdNoteId,
+        });
+
+        if (pdNoteId) {
+          console.log('[Noter] Note oprettet (note ' + pdNoteId + ') for kontakt ' + person.id);
         }
       }
     }
@@ -194,47 +272,12 @@ async function fetchNewNotes() {
 }
 
 // -------------------------------------------------------
-// pollNewCalls — hent nye afsluttede opkald fra Relatel
-// -------------------------------------------------------
-async function pollNewCalls() {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'last_call_check'").get();
-  const lastChecked = row ? row.value : new Date(Date.now() - 60000).toISOString();
-  console.log(`[Poll] Henter opkald afsluttet efter: ${lastChecked}`);
-
-  const calls = await relatel.getCompletedCalls(lastChecked);
-  console.log(`[Poll] Fandt ${calls.length} afsluttede opkald`);
-
-  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_call_check', ?)")
-    .run(new Date().toISOString());
-
-  for (const call of calls) {
-    const normalizedCall = {
-      relatel_uuid:  call.id || call.uuid,
-      phone:         call.from_number || call.to_number,
-      direction:     call.direction,
-      duration:      call.duration,
-      started_at:    call.started_at || call.created_at,
-      recording_url: call.recording_url || null,
-    };
-
-    db.prepare(`INSERT OR IGNORE INTO calls
-      (relatel_uuid, phone, direction, duration, started_at, recording_url, transcription_status)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending')`).run(
-      normalizedCall.relatel_uuid, normalizedCall.phone, normalizedCall.direction,
-      normalizedCall.duration, normalizedCall.started_at, normalizedCall.recording_url
-    );
-
-    await linkToPipedrive(normalizedCall);
-  }
-}
-
-// -------------------------------------------------------
 // start() — eksporteret funktion kaldt fra server.js
 // -------------------------------------------------------
 function start() {
   const INTERVAL = config.pollIntervalSeconds || 30;
 
-  cron.schedule(`*/${INTERVAL} * * * * *`, async () => {
+  cron.schedule('*/' + INTERVAL + ' * * * * *', async () => {
     try { await pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
   });
 
