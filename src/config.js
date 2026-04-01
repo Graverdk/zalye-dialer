@@ -21,6 +21,7 @@ module.exports = {
     apiKey: required('ANTHROPIC_API_KEY'),
   },
 
+
   pipedrive: {
     apiToken: required('PIPEDRIVE_API_TOKEN'),
     clientId: required('PIPEDRIVE_CLIENT_ID'),
