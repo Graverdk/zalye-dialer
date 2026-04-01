@@ -9,8 +9,13 @@ const { transcribe } = require('../services/transcription');
 const claude = require('../services/claude');
 
 // -------------------------------------------------------
-// Deduplication: track synced Relatel note IDs i SQLite
+// Opret tabeller hvis de ikke findes
 // -------------------------------------------------------
+db.prepare(`CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+)`).run();
+
 db.prepare(`CREATE TABLE IF NOT EXISTS synced_notes (
   relatel_note_id INTEGER PRIMARY KEY,
   pipedrive_note_id INTEGER,
@@ -58,7 +63,7 @@ async function processTranscriptions() {
   console.log(`[AI] Behandler ${pending.length} opkald...`);
 
   for (const call of pending) {
-    // Sæt 'processing' STRAKS (synkront) inden async-arbejde starter
+    // Sæt 'processing' STRAKS inden async-arbejde starter
     db.prepare("UPDATE calls SET transcription_status = 'processing' WHERE relatel_uuid = ?")
       .run(call.relatel_uuid);
 
@@ -68,9 +73,7 @@ async function processTranscriptions() {
       console.log('[AI] Downloader optagelse...');
       const audioBuffer = await relatel.downloadRecording(call.recording_url);
 
-      console.log('[Whisper] Konverterer lyd med ffmpeg...');
       const transcription = await transcribe(audioBuffer);
-      console.log('[Whisper] Transskriberer...');
 
       let summary = transcription;
       if (transcription) {
@@ -161,12 +164,14 @@ async function fetchNewNotes() {
       const person = await pipedrive.findPersonByPhone(contact.number);
       if (!person) continue;
 
-      const notes = await relatel.getContactNotes(contact.id);
+      // Brug getComments (det faktiske funktionsnavn i relatel.js)
+      const notes = await relatel.getComments(contact.id);
       if (!notes || notes.length === 0) continue;
 
       for (const note of notes) {
         if (!note.id) continue;
 
+        // Deduplication via SQLite
         const already = db.prepare('SELECT 1 FROM synced_notes WHERE relatel_note_id = ?').get(note.id);
         if (already) continue;
 
