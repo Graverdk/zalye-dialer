@@ -59,36 +59,26 @@ async function getPersonWithDeals(personId) {
 async function createCallNote({ dealId, personId, callData }) {
   const { direction, phoneNumber, startedAt, durationSec, summary, actionPoints, topics, transcription } = callData;
 
-  const directionDa = direction === 'outgoing' ? 'Udgående opkald' : 'Indgående opkald';
-  const dato = new Date(startedAt).toLocaleDateString('da-DK', {
-    day: '2-digit', month: 'long', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
-
+  const dirLabel = direction === 'outgoing' ? 'Udgående opkald' : 'Indgående opkald';
   const durationText = durationSec
     ? `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, '0')} min`
-    : 'Ukendt varighed';
+    : '';
 
-  // Byg note-indhold i HTML (Pipedrive understøtter HTML i noter)
   const actionPointsHtml = actionPoints && actionPoints.length > 0
     ? `<ul>${actionPoints.map(ap => `<li>${ap}</li>`).join('')}</ul>`
-    : '<p><em>Ingen handlingspunkter registreret</em></p>';
+    : '';
 
   const topicsText = topics && topics.length > 0 ? topics.join(', ') : '';
 
   const content = `
-<h3>📞 ${directionDa} — ${phoneNumber}</h3>
-<p><strong>Dato:</strong> ${dato} &nbsp;|&nbsp; <strong>Varighed:</strong> ${durationText}${topicsText ? ` &nbsp;|&nbsp; <strong>Emner:</strong> ${topicsText}` : ''}</p>
+<h3>Opkald — ${dirLabel}</h3>
+<p>${phoneNumber}${durationText ? ` · ${durationText}` : ''}${topicsText ? ` · ${topicsText}` : ''}</p>
 
-<h4>Resumé</h4>
-<p>${summary || '<em>Resumé ikke tilgængeligt</em>'}</p>
+${summary ? `<p><strong>Resumé:</strong> ${summary}</p>` : ''}
 
-<h4>Handlingspunkter</h4>
-${actionPointsHtml}
+${actionPointsHtml ? `<p><strong>Handlingspunkter:</strong></p>${actionPointsHtml}` : ''}
 
-${transcription ? `<details><summary><strong>Vis fuld transskription</strong></summary><p style="font-size:0.9em;color:#555;">${transcription.replace(/\n/g, '<br>')}</p></details>` : ''}
-
-<p style="font-size:0.8em;color:#888;">Automatisk genereret af Zalye Dialer</p>
+${transcription ? `<details><summary>Vis transskription</summary><p style="font-size:0.9em;color:#555;">${transcription.replace(/\n/g, '<br>')}</p></details>` : ''}
 `.trim();
 
   const body = { content };
@@ -116,4 +106,71 @@ async function createCallActivity({ dealId, personId, subject, durationSec, done
   return request('POST', '/activities', body);
 }
 
-module.exports = { findPersonByPhone, getPersonWithDeals, createCallNote, createCallActivity };
+// ============================================================
+// Opret SMS-note i Pipedrive
+// ============================================================
+async function createSmsNote({ dealId, personId, smsData }) {
+  const { direction, phoneNumber, body, sentAt } = smsData;
+  const dirLabel = direction === 'outgoing' ? 'Sendt SMS' : 'Modtaget SMS';
+
+  const content = `
+<h3>SMS — ${dirLabel}</h3>
+<p>${(body || '').replace(/\n/g, '<br>')}</p>
+<p style="font-size:0.85em;color:#666;">${phoneNumber}</p>
+`.trim();
+
+  const noteBody = { content };
+  if (dealId) noteBody.deal_id = dealId;
+  if (personId) noteBody.person_id = personId;
+
+  const note = await request('POST', '/notes', noteBody);
+  return note.id;
+}
+
+// ============================================================
+// Opret Relatel-note i Pipedrive
+// ============================================================
+async function createRelatelNote({ dealId, personId, noteData }) {
+  const { author, body } = noteData;
+
+  const content = `
+<h3>Note</h3>
+<p>${(body || '').replace(/\n/g, '<br>')}</p>
+${author ? `<p style="font-size:0.85em;color:#666;">— ${author}</p>` : ''}
+`.trim();
+
+  const noteBody = { content };
+  if (dealId) noteBody.deal_id = dealId;
+  if (personId) noteBody.person_id = personId;
+
+  const note = await request('POST', '/notes', noteBody);
+  return note.id;
+}
+
+// ============================================================
+// Opret person i Pipedrive med navn, virksomhed og nummer
+// ============================================================
+async function createPerson({ name, phone, orgName }) {
+  const body = {
+    name: name || phone || 'Ukendt',
+    phone: [{ value: phone, primary: true }],
+  };
+
+  // Opret organisation først, hvis vi har et navn
+  if (orgName) {
+    try {
+      const org = await request('POST', '/organizations', { name: orgName });
+      if (org && org.id) body.org_id = org.id;
+    } catch (err) {
+      console.error('[Pipedrive] Kunne ikke oprette organisation:', err.message);
+    }
+  }
+
+  return request('POST', '/persons', body);
+}
+
+module.exports = {
+  findPersonByPhone, getPersonWithDeals,
+  createCallNote, createCallActivity,
+  createSmsNote, createRelatelNote, createPerson,
+};
