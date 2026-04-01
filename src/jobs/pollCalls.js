@@ -244,7 +244,7 @@ async function fetchNewNotes() {
           personId: person.id,
           dealId: latestDealId,
           noteData: {
-            author: typeof author === 'object' ? (author.name || author.email || null) : author,
+            author: (author && typeof author === 'object') ? (author.name || author.email || null) : author,
             body: body,
             createdAt: createdAt,
           },
@@ -254,7 +254,7 @@ async function fetchNewNotes() {
           relatel_id: noteId,
           relatel_contact_id: String(contact.id),
           phone_number: contact.number,
-          author: typeof author === 'object' ? (author.name || null) : author,
+          author: (author && typeof author === 'object') ? (author.name || null) : author,
           body: body,
           created_at_rel: createdAt,
           pipedrive_person_id: person.id,
