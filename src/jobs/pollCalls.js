@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const config = require('../config');
-const { db, calls, insights, state } = require('../db/database');
+const { db, calls, messages, relatelNotes, insights, state } = require('../db/database');
 const relatel = require('../services/relatel');
 const { transcribe } = require('../services/transcription');
 const { analyzeCall } = require('../services/claude');
@@ -203,6 +203,158 @@ async function processTranscriptions() {
 }
 
 // ============================================================
+// Hent nye SMS-beskeder fra Relatel
+// ============================================================
+async function fetchNewMessages() {
+  const lastPoll = state.get('last_sms_poll_time') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  console.log(`[SMS] Henter beskeder efter: ${lastPoll}`);
+
+  let allMessages = [];
+  try {
+    allMessages = await relatel.getMessages({ after: lastPoll, limit: 50 });
+  } catch (err) {
+    console.error('[SMS] Fejl ved hentning fra Relatel:', err.message);
+    return;
+  }
+
+  state.set('last_sms_poll_time', new Date().toISOString());
+
+  if (!Array.isArray(allMessages)) {
+    console.log('[SMS] Uventet svar:', typeof allMessages);
+    return;
+  }
+
+  console.log(`[SMS] Fandt ${allMessages.length} beskeder`);
+
+  for (const msg of allMessages) {
+    try {
+      const normalized = relatel.normalizeMessage(msg);
+      if (!normalized.relatel_id) continue;
+
+      const existing = messages.getById(normalized.relatel_id);
+      if (existing) continue; // Allerede gemt
+
+      // Gem i database
+      messages.upsert(normalized);
+
+      // Link til Pipedrive
+      if (normalized.phone_number) {
+        try {
+          const person = await pipedrive.findPersonByPhone(normalized.phone_number);
+          if (person) {
+            const { latestDealId } = await pipedrive.getPersonWithDeals(person.id) || {};
+            messages.upsert({
+              ...normalized,
+              pipedrive_person_id: person.id,
+              pipedrive_deal_id: latestDealId || null,
+            });
+
+            // Opret note i Pipedrive for SMS'en
+            const noteId = await pipedrive.createSmsNote({
+              personId: person.id,
+              dealId: latestDealId || null,
+              smsData: {
+                direction: normalized.direction,
+                phoneNumber: normalized.phone_number,
+                body: normalized.body,
+                sentAt: normalized.sent_at,
+              },
+            });
+
+            if (noteId) {
+              messages.setNoteId(normalized.relatel_id, noteId);
+              console.log(`[SMS] Oprettet Pipedrive-note ${noteId} for SMS ${normalized.relatel_id}`);
+            }
+          }
+        } catch (err) {
+          console.error(`[SMS] Fejl ved Pipedrive-link for ${normalized.relatel_id}:`, err.message);
+        }
+      }
+    } catch (err) {
+      console.error(`[SMS] Fejl ved behandling af besked:`, err.message);
+    }
+  }
+}
+
+// ============================================================
+// Hent noter/kommentarer fra Relatel kontakter
+// ============================================================
+async function fetchNewNotes() {
+  console.log('[Noter] Henter kontakter og kommentarer fra Relatel...');
+
+  let contacts = [];
+  try {
+    contacts = await relatel.getContacts({ limit: 100 });
+  } catch (err) {
+    console.error('[Noter] Fejl ved hentning af kontakter:', err.message);
+    return;
+  }
+
+  if (!Array.isArray(contacts)) return;
+
+  for (const contact of contacts) {
+    try {
+      const comments = await relatel.getContactComments(contact.id);
+      if (!Array.isArray(comments) || comments.length === 0) continue;
+
+      const phoneNumber = (contact.number || contact.phone || '').replace(/^(\+|00)/, '');
+
+      for (const comment of comments) {
+        const relatelId = `comment-${contact.id}-${comment.id}`;
+        const existing = relatelNotes.getById(relatelId);
+        if (existing) continue;
+
+        const noteData = {
+          relatel_id: relatelId,
+          relatel_contact_id: String(contact.id),
+          phone_number: phoneNumber,
+          author: comment.author || comment.user_name || null,
+          body: comment.body || comment.text || comment.content || '',
+          created_at_rel: comment.created_at || null,
+        };
+
+        relatelNotes.upsert(noteData);
+
+        // Link til Pipedrive
+        if (phoneNumber) {
+          try {
+            const person = await pipedrive.findPersonByPhone(phoneNumber);
+            if (person) {
+              const { latestDealId } = await pipedrive.getPersonWithDeals(person.id) || {};
+              relatelNotes.upsert({
+                ...noteData,
+                pipedrive_person_id: person.id,
+              });
+
+              const pipedriveNoteId = await pipedrive.createRelatelNote({
+                personId: person.id,
+                dealId: latestDealId || null,
+                noteData: {
+                  author: noteData.author,
+                  body: noteData.body,
+                  createdAt: noteData.created_at_rel,
+                },
+              });
+
+              if (pipedriveNoteId) {
+                relatelNotes.upsert({ ...noteData, pipedrive_person_id: person.id, pipedrive_note_id: pipedriveNoteId });
+              }
+            }
+          } catch (err) {
+            console.error(`[Noter] Fejl ved Pipedrive-link:`, err.message);
+          }
+        }
+      }
+    } catch (err) {
+      // Nogle kontakter har muligvis ikke comments-adgang
+      if (!err.message.includes('404')) {
+        console.error(`[Noter] Fejl for kontakt ${contact.id}:`, err.message);
+      }
+    }
+  }
+}
+
+// ============================================================
 // Start polling og AI-pipeline med cron
 // ============================================================
 function start() {
@@ -217,6 +369,20 @@ function start() {
     );
   });
 
+  // Hent nye SMS-beskeder hvert 60. sekund
+  cron.schedule('* * * * *', async () => {
+    await fetchNewMessages().catch(err =>
+      console.error('[Jobs] SMS polling fejlede:', err.message)
+    );
+  });
+
+  // Hent noter fra Relatel hvert 5. minut
+  cron.schedule('*/5 * * * *', async () => {
+    await fetchNewNotes().catch(err =>
+      console.error('[Jobs] Note polling fejlede:', err.message)
+    );
+  });
+
   // Kør AI-pipeline hvert minut (uafhængig af polling)
   cron.schedule('* * * * *', async () => {
     await processTranscriptions().catch(err =>
@@ -226,7 +392,9 @@ function start() {
 
   // Kør straks ved opstart
   setTimeout(() => fetchNewCalls(), 2000);
-  setTimeout(() => processTranscriptions(), 5000);
+  setTimeout(() => fetchNewMessages(), 4000);
+  setTimeout(() => processTranscriptions(), 6000);
+  setTimeout(() => fetchNewNotes(), 10000);
 }
 
-module.exports = { start, fetchNewCalls, processTranscriptions };
+module.exports = { start, fetchNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions };
