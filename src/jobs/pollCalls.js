@@ -9,7 +9,7 @@ const { transcribe } = require('../services/transcription');
 const claude = require('../services/claude');
 
 // -------------------------------------------------------
-// Deduplication: track synced Relatel note IDs in SQLite
+// Deduplication: track synced Relatel note IDs i SQLite
 // -------------------------------------------------------
 db.prepare(`CREATE TABLE IF NOT EXISTS synced_notes (
   relatel_note_id INTEGER PRIMARY KEY,
@@ -29,7 +29,7 @@ async function linkToPipedrive(normalizedCall) {
   const existing = db.prepare('SELECT pipedrive_note_id FROM calls WHERE relatel_uuid = ?')
     .get(normalizedCall.relatel_uuid);
 
-  if (existing && existing.pipedrive_note_id) return; // allerede oprettet
+  if (existing && existing.pipedrive_note_id) return;
 
   const noteId = await pipedrive.createCallNote({
     personId:  person.id,
@@ -58,8 +58,7 @@ async function processTranscriptions() {
   console.log(`[AI] Behandler ${pending.length} opkald...`);
 
   for (const call of pending) {
-    // *** FIX: Sæt 'processing' STRAKS (synkront) inden async-arbejde starter ***
-    // Forhindrer at næste cron-kørsel plukker det samme opkald op igen
+    // Sæt 'processing' STRAKS (synkront) inden async-arbejde starter
     db.prepare("UPDATE calls SET transcription_status = 'processing' WHERE relatel_uuid = ?")
       .run(call.relatel_uuid);
 
@@ -168,7 +167,6 @@ async function fetchNewNotes() {
       for (const note of notes) {
         if (!note.id) continue;
 
-        // *** FIX: Check SQLite for om noten allerede er synkroniseret ***
         const already = db.prepare('SELECT 1 FROM synced_notes WHERE relatel_note_id = ?').get(note.id);
         if (already) continue;
 
@@ -206,11 +204,11 @@ async function pollNewCalls() {
 
   for (const call of calls) {
     const normalizedCall = {
-      relatel_uuid: call.id || call.uuid,
-      phone:        call.from_number || call.to_number,
-      direction:    call.direction,
-      duration:     call.duration,
-      started_at:   call.started_at || call.created_at,
+      relatel_uuid:  call.id || call.uuid,
+      phone:         call.from_number || call.to_number,
+      direction:     call.direction,
+      duration:      call.duration,
+      started_at:    call.started_at || call.created_at,
       recording_url: call.recording_url || null,
     };
 
@@ -226,24 +224,25 @@ async function pollNewCalls() {
 }
 
 // -------------------------------------------------------
-// Cron-jobs
+// start() — eksporteret funktion kaldt fra server.js
 // -------------------------------------------------------
-const INTERVAL = config.pollIntervalSeconds || 30;
+function start() {
+  const INTERVAL = config.pollIntervalSeconds || 30;
 
-// Opkald: hvert 30. sekund
-cron.schedule(`*/${INTERVAL} * * * * *`, async () => {
-  try { await pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
-});
+  cron.schedule(`*/${INTERVAL} * * * * *`, async () => {
+    try { await pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
+  });
 
-// SMS: hvert minut
-cron.schedule('*/30 * * * * *', async () => {
-  try { await fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
-});
+  cron.schedule('*/30 * * * * *', async () => {
+    try { await fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
+  });
 
-// Noter + transskription: hvert minut
-cron.schedule('0 * * * * *', async () => {
-  try { await fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
-  try { await processTranscriptions(); } catch (e) { console.error('[AI] Fejl:', e.message); }
-});
+  cron.schedule('0 * * * * *', async () => {
+    try { await fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
+    try { await processTranscriptions(); } catch (e) { console.error('[AI] Fejl:', e.message); }
+  });
 
-module.exports = { pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions };
+  console.log('[Poll] Cron-jobs startet.');
+}
+
+module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions };
