@@ -36,7 +36,7 @@ async function getPersonWithDeals(personId) {
   return { latestDealId: deals[0]?.id || null };
 }
 
-function buildCallNoteContent({ direction, phoneNumber, startedAt, durationSec, summary, actionPoints, topics, transcription }) {
+function buildCallNoteContent({ direction, phoneNumber, startedAt, durationSec, summary, actionPoints, topics, transcription, diarizedTranscription }) {
   const dirLabel = direction === 'outgoing' ? 'Udgaaende' : 'Indgaaende';
   const date = startedAt
     ? new Date(startedAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' })
@@ -57,7 +57,9 @@ function buildCallNoteContent({ direction, phoneNumber, startedAt, durationSec, 
   if (topics && topics.length > 0) {
     content += `### Emner\n${topics.map(t => `- ${t}`).join('\n')}\n\n`;
   }
-  if (transcription && transcription.trim().length > 0) {
+  if (diarizedTranscription && diarizedTranscription.trim().length > 0) {
+    content += `### Transskription\n${diarizedTranscription}\n`;
+  } else if (transcription && transcription.trim().length > 0) {
     content += `### Transskription\n${transcription}\n`;
   }
   return content;
