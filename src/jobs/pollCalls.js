@@ -161,37 +161,47 @@ async function processTranscriptions() {
 }
 
 async function fetchNewMessages() {
-  const lastChecked = state.get('last_sms_check') || new Date(Date.now() - 60000).toISOString();
-
+  // Hent ALLE beskeder fra Relatel (uden datofilter)
+  // og sammenlign med database for at finde nye
   const newMessages = [];
   try {
-    const rawMessages = await relatel.getMessages({ after: lastChecked });
-    const fresh = (rawMessages || []).filter(m => {
-      const ts = m.created_at || m.sent_at;
-      return ts && new Date(ts) > new Date(lastChecked);
-    });
-    if (fresh.length > 0) {
-      console.log('[SMS] Fandt ' + fresh.length + ' nye beskeder');
+    const rawMessages = await relatel.getMessages({});
+    console.log('[SMS] /messages returnerede ' + (rawMessages || []).length + ' beskeder');
+
+    // Engangsdump af beskeddetaljer (foerste kald efter deploy)
+    const debugDone = state.get('sms_debug_done');
+    if (!debugDone && rawMessages && rawMessages.length > 0) {
+      for (const m of rawMessages) {
+        console.log('[SMS] Besked: id=' + (m.id || 'null') +
+          ' direction=' + (m.direction || '?') +
+          ' from=' + (m.from_number || '?') +
+          ' to=' + (m.to_number || '?') +
+          ' body=' + (m.body || '').substring(0, 50) +
+          ' created=' + (m.created_at || '?') +
+          ' endpoint=' + (m.endpoint || '?'));
+      }
+      state.set('sms_debug_done', '1');
     }
-    newMessages.push(...fresh);
+
+    // Filtrer mod database - kun behold beskeder vi ikke allerede har synket
+    for (const m of (rawMessages || [])) {
+      const msgId = m.id ? String(m.id) : null;
+      if (!msgId) continue;
+      const existing = messages.getById(msgId);
+      if (existing && existing.pipedrive_note_id) continue;
+      newMessages.push(m);
+    }
+
+    if (newMessages.length > 0) {
+      console.log('[SMS] ' + newMessages.length + ' nye/usynkede beskeder fundet');
+    }
   } catch (e) {
     console.error('[SMS] /messages fejl:', e.message);
-  }
-
-  try {
-    const chats = await relatel.getChats({ after: lastChecked });
-    if (chats && chats.length > 0) {
-      newMessages.push(...chats);
-    }
-  } catch (e) {
-    console.error('[SMS] /chats fejl:', e.message);
   }
 
   for (const msg of newMessages) {
     const nm = relatel.normalizeMessage(msg);
     if (!nm.phone_number) continue;
-    const existing = nm.relatel_id ? messages.getById(nm.relatel_id) : null;
-    if (existing && existing.pipedrive_note_id) continue;
     const lookup = await lookupPerson(nm.phone_number);
     if (!lookup || !lookup.personId) continue;
     messages.upsert({
@@ -219,7 +229,6 @@ async function fetchNewMessages() {
       console.log('[SMS] SMS-note oprettet (note ' + noteId + ') for ' + nm.phone_number);
     }
   }
-  state.set('last_sms_check', new Date().toISOString());
 }
 
 async function fetchNewNotes() {
@@ -297,13 +306,13 @@ function start() {
     try { await pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
   });
 
-  // SMS: hvert 30. sekund
-  cron.schedule('*/30 * * * * *', async () => {
+  // SMS: hvert minut (sammenligner mod DB, ikke tidsfilter)
+  cron.schedule('0 * * * * *', async () => {
     try { await fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
   });
 
   // Transskription: hvert minut
-  cron.schedule('0 * * * * *', async () => {
+  cron.schedule('30 * * * * *', async () => {
     try { await processTranscriptions(); } catch (e) { console.error('[AI] Fejl:', e.message); }
   });
 
@@ -312,7 +321,7 @@ function start() {
     try { await fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
   });
 
-  console.log('[Poll] Cron-jobs startet (opkald+SMS: 30s, transskription: 60s, noter: 5min).');
+  console.log('[Poll] Cron-jobs startet (opkald: 30s, SMS: 60s, transskription: 60s, noter: 5min).');
 }
 
 module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions };
