@@ -17,13 +17,13 @@ async function request(method, path, body = null) {
   const res = await fetch(`${BASE}${path}`, opts);
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(`Relatel API fejl ${res.status} på ${path}: ${JSON.stringify(json)}`);
+    throw new Error(`Relatel API fejl ${res.status} paa ${path}: ${JSON.stringify(json)}`);
   }
   return json;
 }
 
 // ============================================================
-// Initier udgående opkald (click-to-call bridge)
+// Initier udgaaende opkald (click-to-call bridge)
 // ============================================================
 async function initiateCall({ toNumber, restrictTo = '', cloakReceptionId = null }) {
   const normalized = toNumber.replace(/^(\+|00)/, '');
@@ -38,12 +38,12 @@ async function initiateCall({ toNumber, restrictTo = '', cloakReceptionId = null
 // ============================================================
 async function getCalls({ direction, endedAfter, endedBefore, startedAfter, limit = 50, endpoint } = {}) {
   const params = new URLSearchParams();
-  if (direction)    params.set('direction', direction);
-  if (endedAfter)   params.set('ended_at_gt_or_eq', endedAfter);
-  if (endedBefore)  params.set('ended_at_lt_or_eq', endedBefore);
+  if (direction) params.set('direction', direction);
+  if (endedAfter) params.set('ended_at_gt_or_eq', endedAfter);
+  if (endedBefore) params.set('ended_at_lt_or_eq', endedBefore);
   if (startedAfter) params.set('started_at_gt_or_eq', startedAfter);
-  if (limit)        params.set('limit', limit);
-  if (endpoint)     params.set('endpoint', endpoint);
+  if (limit) params.set('limit', limit);
+  if (endpoint) params.set('endpoint', endpoint);
   const query = params.toString() ? `?${params}` : '';
   const data = await request('GET', `/calls${query}`);
   return data.calls || [];
@@ -76,27 +76,31 @@ function normalizeCall(rc) {
     rc.direction === 'outgoing' ? rc.to_number : rc.from_number
   );
   const employeeNumber = rc.direction === 'outgoing' ? rc.from_number : rc.to_number;
-  const durationSec = rc.talk_duration != null ? rc.talk_duration : (
-    rc.answered_at && rc.ended_at
-      ? Math.round((new Date(rc.ended_at) - new Date(rc.answered_at)) / 1000)
-      : null
-  );
+
+  const durationSec = rc.talk_duration != null
+    ? rc.talk_duration
+    : (
+      rc.answered_at && rc.ended_at
+        ? Math.round((new Date(rc.ended_at) - new Date(rc.answered_at)) / 1000)
+        : null
+    );
+
   const recordingUrl = rc.recording && !rc.recording.expired
     ? (rc.recording.url || rc.recording.sound?.url || null)
     : null;
 
   return {
     relatel_uuid: rc.call_uuid,
-    direction:    rc.direction,
+    direction: rc.direction,
     phone_number: (externalNumber || '').replace(/^(\+|00)/, ''),
     employee_number: employeeNumber || '',
-    started_at:  rc.started_at  || null,
+    started_at: rc.started_at || null,
     answered_at: rc.answered_at || null,
-    ended_at:    rc.ended_at    || null,
+    ended_at: rc.ended_at || null,
     duration_sec: durationSec,
     recording_url: recordingUrl,
     pipedrive_person_id: null,
-    pipedrive_deal_id:   null,
+    pipedrive_deal_id: null,
   };
 }
 
@@ -105,9 +109,9 @@ function normalizeCall(rc) {
 // ============================================================
 async function getMessages({ after, before, limit = 50 } = {}) {
   const params = new URLSearchParams();
-  if (after)  params.set('created_at_gt_or_eq', after);
+  if (after) params.set('created_at_gt_or_eq', after);
   if (before) params.set('created_at_lt_or_eq', before);
-  if (limit)  params.set('limit', limit);
+  if (limit) params.set('limit', limit);
   const query = params.toString() ? `?${params}` : '';
   const data = await request('GET', `/messages${query}`);
   return data.messages || data || [];
@@ -130,7 +134,17 @@ async function getContactComments(contactId) {
 }
 
 // ============================================================
-// Chats (SMS-tråde)
+// Opdater kontakt i Relatel
+// ============================================================
+async function updateContact(contactId, { name, email } = {}) {
+  const contact = {};
+  if (name) contact.name = name;
+  if (email) contact.email = email;
+  return request('PUT', '/contacts/' + contactId, { contact });
+}
+
+// ============================================================
+// Chats (SMS-traade)
 // ============================================================
 async function getChats({ after, limit = 50 } = {}) {
   const params = new URLSearchParams();
@@ -151,16 +165,27 @@ async function getChat(uuid) {
 // ============================================================
 function normalizeMessage(msg) {
   return {
-    relatel_id:    msg.id || msg.uuid || null,
-    direction:     msg.direction || (msg.from_number ? 'incoming' : 'outgoing'),
-    phone_number:  (msg.remote_number || msg.to_number || msg.from_number || '').replace(/^(\+|00)/, ''),
-    body:          msg.body || msg.text || msg.content || '',
-    sent_at:       msg.created_at || msg.sent_at || null,
+    relatel_id: msg.id || msg.uuid || null,
+    direction: msg.direction || (msg.from_number ? 'incoming' : 'outgoing'),
+    phone_number: (msg.remote_number || msg.to_number || msg.from_number || '').replace(/^(\+|00)/, ''),
+    body: msg.body || msg.text || msg.content || '',
+    sent_at: msg.created_at || msg.sent_at || null,
     employee_number: msg.employee_number || null,
   };
 }
 
 module.exports = {
-  initiateCall, getCalls, getCall, downloadRecording, getEmployees, normalizeCall,
-  getMessages, getContacts, getContactComments, getChats, getChat, normalizeMessage,
+  initiateCall,
+  getCalls,
+  getCall,
+  downloadRecording,
+  getEmployees,
+  normalizeCall,
+  getMessages,
+  getContacts,
+  getContactComments,
+  updateContact,
+  getChats,
+  getChat,
+  normalizeMessage,
 };
