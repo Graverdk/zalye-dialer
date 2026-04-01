@@ -1,55 +1,44 @@
-const Anthropic = require('@anthropic-ai/sdk');
-const config = require('../config');
-
-const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
-
 // ============================================================
-// Transskribér lyd til dansk tekst via Anthropic Claude
-// audioBuffer: Buffer med lydfilen
-// contentType: MIME type (f.eks. 'audio/mpeg', 'audio/wav')
+// Transskribér lyd til dansk tekst via lokal Whisper-model
+// Lyden forlader ALDRIG serveren — 100% privat og GDPR-safe.
+// Bruger @xenova/transformers som kører modellen lokalt.
 // ============================================================
+
+let _pipeline = null;
+
+async function getTranscriber() {
+  if (_pipeline) return _pipeline;
+
+  // Lazy-load for at undgå lang startup-tid
+  const { pipeline } = await import('@xenova/transformers');
+
+  console.log('[Whisper] Indlæser lokal Whisper-model (første gang tager ~30 sek)...');
+  _pipeline = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small', {
+    revision: 'main',
+    // Tving dansk sprog som standard
+    forced_decoder_ids: null,
+  });
+  console.log('[Whisper] Model klar.');
+  return _pipeline;
+}
+
 async function transcribe(audioBuffer, contentType = 'audio/mpeg') {
-  // Konverter til base64 for Anthropic API
-  const base64Audio = audioBuffer.toString('base64');
+  const transcriber = await getTranscriber();
 
-  // Map content type til Anthropic's understøttede media types
-  const mediaType = contentType.includes('wav') ? 'audio/wav'
-    : contentType.includes('ogg') ? 'audio/ogg'
-    : contentType.includes('webm') ? 'audio/webm'
-    : 'audio/mpeg';
+  // Konverter Buffer til Float32Array (Whisper-format)
+  // Xenova/transformers accepterer raw audio data som URL eller Float32Array
+  // Vi gemmer midlertidigt til en data URL
+  const base64 = audioBuffer.toString('base64');
+  const dataUrl = `data:${contentType};base64,${base64}`;
 
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'media',
-            source: {
-              type: 'base64',
-              media_type: mediaType,
-              data: base64Audio,
-            },
-          },
-          {
-            type: 'text',
-            text: `Transskribér denne lydoptagelse af et telefonopkald på dansk.
-
-Regler:
-- Skriv PRÆCIS hvad der bliver sagt, ord for ord
-- Bevar talesprog og dialekt som det lyder
-- Markér forskellige talere med "Taler 1:" og "Taler 2:" osv.
-- Inkluder pauser med [...] og utydeligt tale med [utydelig]
-- Returner KUN transskriptionen, ingen kommentarer eller forklaring`,
-          },
-        ],
-      },
-    ],
+  const result = await transcriber(dataUrl, {
+    language: 'danish',
+    task: 'transcribe',
+    chunk_length_s: 30,
+    stride_length_s: 5,
   });
 
-  return message.content[0].text.trim();
+  return (result.text || '').trim();
 }
 
 module.exports = { transcribe };
