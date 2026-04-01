@@ -21,6 +21,13 @@ async function findPersonByPhone(rawPhone) {
   return null;
 }
 
+async function getPersonById(personId) {
+  const url = `${BASE}/persons/${personId}?api_token=${TOKEN}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  return data?.data || null;
+}
+
 async function getPersonWithDeals(personId) {
   const url = `${BASE}/persons/${personId}/deals?api_token=${TOKEN}&status=open&limit=1`;
   const res = await fetch(url);
@@ -30,8 +37,10 @@ async function getPersonWithDeals(personId) {
 }
 
 function buildCallNoteContent({ direction, phoneNumber, startedAt, durationSec, summary, actionPoints, topics, transcription }) {
-  const dirLabel = direction === 'outgoing' ? 'Udg\u00e5ende' : 'Indg\u00e5ende';
-  const date = startedAt ? new Date(startedAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : '\u2014';
+  const dirLabel = direction === 'outgoing' ? 'Udgaaende' : 'Indgaaende';
+  const date = startedAt
+    ? new Date(startedAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' })
+    : '\u2014';
   const min = Math.floor((durationSec || 0) / 60);
   const sec = (durationSec || 0) % 60;
   const durStr = `${min}m ${sec}s`;
@@ -105,7 +114,9 @@ async function createCallActivity({ dealId, personId, subject, durationSec, done
 async function createSmsNote({ personId, dealId, smsData }) {
   const { direction, phoneNumber, body: msgBody, sentAt } = smsData;
   const dirLabel = direction === 'outgoing' ? 'Sendt' : 'Modtaget';
-  const date = sentAt ? new Date(sentAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : '\u2014';
+  const date = sentAt
+    ? new Date(sentAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' })
+    : '\u2014';
 
   let content = `## SMS \u2014 ${dirLabel}\n`;
   content += `**Tidspunkt:** ${date}\n`;
@@ -127,7 +138,9 @@ async function createSmsNote({ personId, dealId, smsData }) {
 
 async function createRelatelNote({ personId, dealId, noteData }) {
   const { author, body: noteBody, createdAt } = noteData;
-  const date = createdAt ? new Date(createdAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' }) : '\u2014';
+  const date = createdAt
+    ? new Date(createdAt).toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen' })
+    : '\u2014';
 
   let content = `## Note\n`;
   content += `**Dato:** ${date}\n`;
@@ -162,6 +175,7 @@ async function createPerson({ name, phone, orgName }) {
 
 module.exports = {
   findPersonByPhone,
+  getPersonById,
   getPersonWithDeals,
   createCallNote,
   updateNote,
