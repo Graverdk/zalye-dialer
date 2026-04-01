@@ -24,8 +24,6 @@ async function request(method, path, body = null) {
 
 // ============================================================
 // Initier udgående opkald (click-to-call bridge)
-// Relatel ringer til medarbejderens telefon, derefter til kunden.
-// restrict_to: '' (alle), 'web_call', 'mobile'
 // ============================================================
 async function initiateCall({ toNumber, restrictTo = '', cloakReceptionId = null }) {
   const normalized = toNumber.replace(/^(\+|00)/, '');
@@ -37,7 +35,6 @@ async function initiateCall({ toNumber, restrictTo = '', cloakReceptionId = null
 
 // ============================================================
 // Hent afsluttede opkald med filtrering
-// Relatel API v2 bruger 'call_uuid' som unik nøgle (ikke 'uuid')
 // ============================================================
 async function getCalls({ direction, endedAfter, endedBefore, startedAfter, limit = 50, endpoint } = {}) {
   const params = new URLSearchParams();
@@ -52,63 +49,44 @@ async function getCalls({ direction, endedAfter, endedBefore, startedAfter, limi
   return data.calls || [];
 }
 
-// ============================================================
-// Hent enkelt opkald via call_uuid (POST /calls med uuid i body)
-// ============================================================
 async function getCall(callUuid) {
   const data = await request('POST', '/calls', { uuid: callUuid });
   return data.call;
 }
 
-// ============================================================
-// Download optagelsesfil som Buffer
-// ============================================================
 async function downloadRecording(url) {
   const res = await fetch(url, {
     headers: { 'Authorization': `Bearer ${config.relatel.accessToken}` },
   });
-  if (!res.ok) {
-    throw new Error(`Kunne ikke downloade optagelse: HTTP ${res.status}`);
-  }
+  if (!res.ok) throw new Error(`Kunne ikke downloade optagelse: HTTP ${res.status}`);
   const buffer = await res.buffer();
   return { buffer, contentType: res.headers.get('content-type') || 'audio/mpeg' };
 }
 
-// ============================================================
-// Hent liste over medarbejdere
-// ============================================================
 async function getEmployees() {
   const data = await request('GET', '/employees');
   return data.employees || [];
 }
 
 // ============================================================
-// Normaliser et Relatel Call-objekt til vores interne format
-// VIGTIGT: Relatel API v2 bruger 'call_uuid' (ikke 'uuid')
-// og 'talk_duration' (ikke 'duration')
+// Normaliser Relatel Call-objekt til internt format
 // ============================================================
 function normalizeCall(rc) {
-  // Ekstern part: ved udgående = to_number, ved indgående = from_number
-  // remote_number er altid den eksterne part
   const externalNumber = rc.remote_number || (
     rc.direction === 'outgoing' ? rc.to_number : rc.from_number
   );
   const employeeNumber = rc.direction === 'outgoing' ? rc.from_number : rc.to_number;
-
-  // Varighed: brug talk_duration (sekunder) fra Relatel v2
   const durationSec = rc.talk_duration != null ? rc.talk_duration : (
     rc.answered_at && rc.ended_at
       ? Math.round((new Date(rc.ended_at) - new Date(rc.answered_at)) / 1000)
       : null
   );
-
-  // Optagelse: tjek recording felt
   const recordingUrl = rc.recording && !rc.recording.expired
     ? (rc.recording.url || rc.recording.sound?.url || null)
     : null;
 
   return {
-    relatel_uuid: rc.call_uuid,   // RETTET: var rc.uuid - hedder call_uuid i Relatel v2
+    relatel_uuid: rc.call_uuid,
     direction:    rc.direction,
     phone_number: (externalNumber || '').replace(/^(\+|00)/, ''),
     employee_number: employeeNumber || '',
@@ -122,4 +100,67 @@ function normalizeCall(rc) {
   };
 }
 
-module.exports = { initiateCall, getCalls, getCall, downloadRecording, getEmployees, normalizeCall };
+// ============================================================
+// SMS-beskeder
+// ============================================================
+async function getMessages({ after, before, limit = 50 } = {}) {
+  const params = new URLSearchParams();
+  if (after)  params.set('created_at_gt_or_eq', after);
+  if (before) params.set('created_at_lt_or_eq', before);
+  if (limit)  params.set('limit', limit);
+  const query = params.toString() ? `?${params}` : '';
+  const data = await request('GET', `/messages${query}`);
+  return data.messages || data || [];
+}
+
+// ============================================================
+// Kontakter fra Relatel
+// ============================================================
+async function getContacts({ limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  if (limit) params.set('limit', limit);
+  const query = params.toString() ? `?${params}` : '';
+  const data = await request('GET', `/contacts${query}`);
+  return data.contacts || data || [];
+}
+
+async function getContactComments(contactId) {
+  const data = await request('GET', `/contacts/${contactId}/comments`);
+  return data.comments || data || [];
+}
+
+// ============================================================
+// Chats (SMS-tråde)
+// ============================================================
+async function getChats({ after, limit = 50 } = {}) {
+  const params = new URLSearchParams();
+  if (after) params.set('updated_at_gt_or_eq', after);
+  if (limit) params.set('limit', limit);
+  const query = params.toString() ? `?${params}` : '';
+  const data = await request('GET', `/chats${query}`);
+  return data.chats || data || [];
+}
+
+async function getChat(uuid) {
+  const data = await request('GET', `/chats/${uuid}`);
+  return data.chat || data;
+}
+
+// ============================================================
+// Normaliser SMS til internt format
+// ============================================================
+function normalizeMessage(msg) {
+  return {
+    relatel_id:    msg.id || msg.uuid || null,
+    direction:     msg.direction || (msg.from_number ? 'incoming' : 'outgoing'),
+    phone_number:  (msg.remote_number || msg.to_number || msg.from_number || '').replace(/^(\+|00)/, ''),
+    body:          msg.body || msg.text || msg.content || '',
+    sent_at:       msg.created_at || msg.sent_at || null,
+    employee_number: msg.employee_number || null,
+  };
+}
+
+module.exports = {
+  initiateCall, getCalls, getCall, downloadRecording, getEmployees, normalizeCall,
+  getMessages, getContacts, getContactComments, getChats, getChat, normalizeMessage,
+};
