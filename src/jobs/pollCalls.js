@@ -142,6 +142,18 @@ async function fetchNewMessages() {
   const lastChecked = state.get('last_sms_check') || new Date(Date.now() - 60000).toISOString();
   console.log('[SMS] Henter beskeder efter: ' + lastChecked);
 
+  // DEBUG: Tjek om /messages overhovedet returnerer noget (uden datofilter)
+  try {
+    const allMsgs = await relatel.getMessages({});
+    console.log('[SMS] DEBUG /messages (ingen filter): ' + (allMsgs ? allMsgs.length : 'null') + ' beskeder totalt');
+    if (allMsgs && allMsgs.length > 0) {
+      console.log('[SMS] DEBUG første besked nøgler: ' + Object.keys(allMsgs[0]).join(', '));
+      console.log('[SMS] DEBUG første besked: ' + JSON.stringify(allMsgs[0]).substring(0, 300));
+    }
+  } catch (e) {
+    console.error('[SMS] DEBUG /messages (ingen filter) fejl:', e.message);
+  }
+
   const newMessages = [];
 
   try {
@@ -213,7 +225,12 @@ async function fetchNewMessages() {
 // fetchNewNotes
 // -------------------------------------------------------
 async function fetchNewNotes() {
-  console.log('[Noter] Henter kontakter fra Relatel...');
+  // Hent kun noter oprettet siden sidst — ved første kørsel med tom DB
+  // starter vi kun 24 timer tilbage for at undgå re-sync af alt historik
+  const lastChecked = state.get('last_notes_check')
+    || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  console.log('[Noter] Henter kontakter fra Relatel (noter siden ' + lastChecked + ')...');
 
   try {
     const contacts = await relatel.getContacts();
@@ -227,9 +244,16 @@ async function fetchNewNotes() {
       const comments = await relatel.getContactComments(contact.id);
       if (!comments || comments.length === 0) continue;
 
+      // Filtrer: kun kommentarer nyere end lastChecked
+      const freshComments = comments.filter(c => {
+        const ts = c.created_at || c.updated_at;
+        return !ts || new Date(ts) > new Date(lastChecked);
+      });
+      if (freshComments.length === 0) continue;
+
       const { latestDealId } = await pipedrive.getPersonWithDeals(person.id);
 
-      for (const comment of comments) {
+      for (const comment of freshComments) {
         const noteId = comment.id ? String(comment.id) : null;
         if (!noteId) continue;
 
@@ -269,6 +293,9 @@ async function fetchNewNotes() {
   } catch (e) {
     console.error('[Noter] Fejl:', e.message);
   }
+
+  // Opdater tidsstempel — næste kørsel ser kun på noter nyere end nu
+  state.set('last_notes_check', new Date().toISOString());
 }
 
 // -------------------------------------------------------
