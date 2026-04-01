@@ -116,12 +116,12 @@
             if (callActive) return;
             phoneInput.value = '';
             btnCall.disabled = true;
-            statusText.textContent = 'Venter p&#229; opkald...';
+            statusText.textContent = 'Venter p\u00e5 opkald...';
             personBanner.style.display = 'none';
             currentPersonId = null; currentDealId = null;
         }
 
-        // --- Metode 1: URL query parameter (prim&#230;r metode) ---
+        // --- Metode 1: URL query parameter (prim\u00e6r metode) ---
         // Pipedrive sender phoneNumber som ?selectedPhone=xxx eller ?phone=xxx
         function readFromURL() {
             var params = new URLSearchParams(window.location.search);
@@ -140,12 +140,12 @@
             return false;
         }
 
-        // --- Metode 2: postMessage (lyt p&#229; alle beskeder fra Pipedrive) ---
+        // --- Metode 2: postMessage (lyt p\u00e5 alle beskeder fra Pipedrive) ---
         window.addEventListener('message', function(evt) {
             if (!evt.data) return;
             var d = evt.data;
             log('MSG: ' + JSON.stringify(d).slice(0, 120));
-            // Pr&#248;v at udtr&#230;kke telefonnummer fra enhver besked
+            // Pr\u00f8v at udtr\u00e6kke telefonnummer fra enhver besked
             var phone = d.phoneNumber || d.phone_number || d.phone ||
                         (d.context && (d.context.phoneNumber || d.context.phone)) ||
                         (d.data && (d.data.phoneNumber || d.data.phone)) || null;
@@ -160,7 +160,7 @@
 
         phoneInput.addEventListener('input', function() {
             btnCall.disabled = !phoneInput.value.trim();
-            if (!phoneInput.value.trim()) statusText.textContent = 'Venter p&#229; opkald...';
+            if (!phoneInput.value.trim()) statusText.textContent = 'Venter p\u00e5 opkald...';
         });
         btnClear.addEventListener('click', clearDialer);
 
@@ -191,7 +191,48 @@
         btnHangup.addEventListener('click', endCall);
         phoneInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') initiateCall(); });
 
-        // --- SDK: initialize + context + event listeners ---
+        // --- Sikker JSON stringify (ctx kan have cirkul\u00e6re refs) ---
+        function safeStr(obj, max) {
+            try { return JSON.stringify(obj).slice(0, max || 200); }
+            catch(e) { return '[keys:' + Object.keys(obj || {}).join(',') + ']'; }
+        }
+
+        // --- Dyb s\u00f8gning efter telefonnummer i et objekt ---
+        function findPhone(obj) {
+            if (!obj || typeof obj !== 'object') return null;
+            // Direkte properties
+            var ph = obj.phoneNumber || obj.phone || obj.selectedPhone ||
+                     obj.number || obj.phone_number || obj.selected_phone || null;
+            if (ph) {
+                // H\u00e5ndter array af telefonnumre (Pipedrive format)
+                if (Array.isArray(ph)) {
+                    var primary = ph.find(function(p) { return p && p.primary; }) || ph[0];
+                    return primary ? (primary.value || primary) : null;
+                }
+                return ph;
+            }
+            // Nestede objekter
+            var nested = ['resource', 'data', 'context', 'entity', 'person'];
+            for (var i = 0; i < nested.length; i++) {
+                if (obj[nested[i]] && typeof obj[nested[i]] === 'object') {
+                    var found = findPhone(obj[nested[i]]);
+                    if (found) return found;
+                }
+            }
+            return null;
+        }
+
+        function findName(obj) {
+            if (!obj || typeof obj !== 'object') return null;
+            var n = obj.name || obj.personName || obj.person_name || null;
+            if (n) return n;
+            if (obj.resource && obj.resource.name) return obj.resource.name;
+            if (obj.data && obj.data.name) return obj.data.name;
+            if (obj.person && obj.person.name) return obj.person.name;
+            return null;
+        }
+
+        // --- SDK init ---
         function initSDK() {
             log('Init SDK...');
             var SDK = window.AppExtensionsSDK;
@@ -199,46 +240,52 @@
             sdk = new SDK();
             sdk.initialize({ size: { height: 400, width: 350 } })
             .then(function(ctx) {
-                log('SDK OK ctx: ' + JSON.stringify(ctx).slice(0, 120));
-                // L&#230;s URL params n&#229;r SDK er klar
+                log('SDK OK ' + safeStr(ctx, 150));
+
                 var gotPhone = readFromURL();
-                // Hvis ingen phone fra URL, pr&#248;v SDK context
+
+                // S\u00f8g efter telefon i SDK context
                 if (!gotPhone && ctx) {
-                    var phone = ctx.phoneNumber || ctx.phone || ctx.selectedPhone ||
-                                (ctx.resource && ctx.resource.phone) || null;
+                    var phone = findPhone(ctx);
+                    var name = findName(ctx);
+                    log('CTX phone: ' + (phone || 'ingen') + ' name: ' + (name || 'ingen'));
                     if (phone) {
-                        setPhone(phone, ctx.name || ctx.personName, 'CTX');
+                        setPhone(phone, name, 'CTX');
+                        gotPhone = true;
                     }
                 }
-                // Pr&#248;v ogs&#229; getContext for mere data
+
+                // Pr\u00f8v getContext command for mere data
                 if (!gotPhone) {
                     try {
                         sdk.execute('getContext').then(function(data) {
-                            log('getCtx: ' + JSON.stringify(data).slice(0, 120));
-                            if (data && data.selectedPhone) {
-                                setPhone(data.selectedPhone, data.name, 'getCtx');
+                            log('getCtx: ' + safeStr(data, 150));
+                            if (data) {
+                                var ph = findPhone(data);
+                                if (ph) setPhone(ph, findName(data), 'getCtx');
                             }
                         }).catch(function(e) { log('getCtx err: ' + e.message); });
                     } catch(e) { log('getCtx N/A'); }
                 }
-                // Lyt p&#229; CALLER_DATA og PHONE events
-                var events = ['CALLER_DATA', 'phone', 'PHONE'];
-                events.forEach(function(evt) {
+
+                // Lyt p\u00e5 events for telefonnummer
+                ['CALLER_DATA', 'phone', 'PHONE', 'page_visibility_state'].forEach(function(evt) {
                     try {
                         sdk.listen({ event: evt, callback: function(data) {
-                            log(evt + ': ' + JSON.stringify(data).slice(0, 100));
-                            var ph = data.phoneNumber || data.phone || data.selectedPhone || data.number || null;
-                            if (ph) setPhone(ph, data.name || data.personName, evt);
+                            log(evt + ': ' + safeStr(data, 120));
+                            if (evt === 'page_visibility_state') return;
+                            var ph = findPhone(data);
+                            if (ph) setPhone(ph, findName(data), evt);
                         }});
                     } catch(e) { /* event ikke supporteret */ }
                 });
             })
             .catch(function(err) {
-                log('SDK fejl: ' + (err.message || err));
+                log('SDK fejl: ' + (err && err.message ? err.message : String(err)));
             });
         }
 
-        // L&#230;s URL straks (f&#248;r SDK init)
+        // L\u00e6s URL straks (f\u00f8r SDK init)
         readFromURL();
 
         if (document.readyState === 'loading') {
