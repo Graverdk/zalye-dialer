@@ -1,7 +1,7 @@
 'use strict';
 const cron = require('node-cron');
 const config = require('../config');
-const { db, calls, messages, relatelNotes, state } = require('../db/database');
+const { db, calls, messages, relatelNotes, insights, state } = require('../db/database');
 const relatel = require('../services/relatel');
 const pipedrive = require('../services/pipedrive');
 const { transcribe } = require('../services/transcription');
@@ -10,6 +10,10 @@ const claude = require('../services/claude');
 // In-memory cache: phone number -> { personId, latestDealId, ts }
 const personCache = new Map();
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutter
+
+// Cache over berigede kontakter (Relatel contact ID -> true)
+// Undgaar at scanne samme kontakter hvert 5. minut
+const enrichedContactIds = new Set();
 
 async function lookupPerson(phoneNumber) {
   const cached = personCache.get(phoneNumber);
@@ -99,6 +103,7 @@ async function processTranscriptions() {
       let actionPoints = null;
       let topics = null;
       let diarizedTranscription = null;
+      let analysisResult = null;
 
       if (transcription) {
         console.log('[AI] Analyserer med Claude...');
@@ -111,6 +116,7 @@ async function processTranscriptions() {
           actionPoints = analysis.actionPoints || null;
           topics = analysis.topics || null;
           diarizedTranscription = analysis.diarizedTranscription || null;
+          analysisResult = analysis;
         } else {
           summary = analysis || transcription;
         }
@@ -152,6 +158,32 @@ async function processTranscriptions() {
         topics,
         pipedriveNoteId: call.pipedrive_note_id,
       });
+
+      // ============================================================
+      // GEM SALES INTELLIGENCE i call_insights-tabellen
+      // Saa data kan bruges til trends, coaching og dashboards
+      // ============================================================
+      if (analysisResult && call.id) {
+        try {
+          insights.upsert(call.id, {
+            sentiment: analysisResult.sentiment,
+            callOutcome: analysisResult.callOutcome,
+            painPoints: analysisResult.painPoints,
+            objections: analysisResult.objections,
+            buyingSignals: analysisResult.buyingSignals,
+            competitorMentions: analysisResult.competitorMentions,
+            nextSteps: analysisResult.nextSteps,
+            customerStage: analysisResult.customerStage,
+            engagementScore: analysisResult.engagementScore,
+            conversionLikelihood: analysisResult.conversionLikelihood,
+            aiCoachingNote: analysisResult.aiCoachingNote,
+          });
+          console.log('[AI] Sales intelligence gemt for call ' + call.id);
+        } catch (insightErr) {
+          console.error('[AI] Kunne ikke gemme insights:', insightErr.message);
+        }
+      }
+
       console.log('[AI] Faerdig: ' + call.relatel_uuid);
     } catch (err) {
       console.error('[AI] Fejl ved transskription: ' + err.message);
@@ -164,33 +196,93 @@ async function processTranscriptions() {
   }
 }
 
+// ============================================================
+// FIX: Genhent opkald der mangler recording_url
+// Relatel har ofte 1-2 min forsinkelse paa optagelser
+// Uden denne funktion bliver de aldrig transskriberet
+// ============================================================
+async function retryMissingRecordings() {
+  try {
+    // Find opkald fra sidste 24 timer uden recording_url
+    const stale = db.prepare(`
+      SELECT relatel_uuid FROM calls
+      WHERE recording_url IS NULL
+        AND recording_expired = 0
+        AND ended_at IS NOT NULL
+        AND datetime(ended_at) > datetime('now', '-24 hours')
+      ORDER BY ended_at DESC
+      LIMIT 20
+    `).all();
+
+    if (stale.length === 0) return;
+    console.log('[Retry] Forsoeger at hente recording for ' + stale.length + ' opkald');
+
+    for (const row of stale) {
+      try {
+        const fullCall = await relatel.getCall(row.relatel_uuid);
+        if (!fullCall) continue;
+        const detailed = relatel.normalizeCall(fullCall);
+        if (detailed.recording_url) {
+          db.prepare('UPDATE calls SET recording_url = ?, transcription_status = ? WHERE relatel_uuid = ?')
+            .run(detailed.recording_url, 'pending', row.relatel_uuid);
+          console.log('[Retry] Recording fundet for ' + row.relatel_uuid);
+        }
+      } catch (e) {
+        console.error('[Retry] Fejl for ' + row.relatel_uuid + ':', e.message);
+      }
+    }
+  } catch (e) {
+    console.error('[Retry] Fejl:', e.message);
+  }
+}
+
+// ============================================================
+// OPTIMERET: Brug datofilter saa vi kun henter nye SMS'er
+// + gem beskeder ALTID i DB (ogsaa uden Pipedrive-match)
+// saa de ikke genbehandles naeste minut
+// ============================================================
 async function fetchNewMessages() {
+  const lastChecked = state.get('last_sms_check') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const newMessages = [];
   try {
-    const rawMessages = await relatel.getMessages({});
-    console.log('[SMS] /messages returnerede ' + (rawMessages || []).length + ' beskeder');
+    const rawMessages = await relatel.getMessages({ after: lastChecked });
+    console.log('[SMS] /messages returnerede ' + (rawMessages || []).length + ' beskeder (efter ' + lastChecked + ')');
 
     for (const m of (rawMessages || [])) {
       const msgId = m.id ? String(m.id) : null;
       if (!msgId) continue;
       const existing = messages.getById(msgId);
-      if (existing && existing.pipedrive_note_id) continue;
+      if (existing) continue; // Allerede i DB (med eller uden Pipedrive-match)
       newMessages.push(m);
     }
     if (newMessages.length > 0) {
-      console.log('[SMS] ' + newMessages.length + ' nye/usynkede beskeder fundet');
+      console.log('[SMS] ' + newMessages.length + ' nye beskeder fundet');
     }
   } catch (e) {
     console.error('[SMS] /messages fejl:', e.message);
   }
+  state.set('last_sms_check', new Date().toISOString());
 
   for (const msg of newMessages) {
     const nm = relatel.normalizeMessage(msg);
     if (!nm.phone_number) continue;
 
+    // Gem ALTID i DB saa beskeden ikke genbehandles
+    messages.upsert({
+      relatel_id: nm.relatel_id,
+      direction: nm.direction,
+      phone_number: nm.phone_number,
+      employee_number: nm.employee_number,
+      body: nm.body,
+      sent_at: nm.sent_at,
+      pipedrive_person_id: null,
+      pipedrive_deal_id: null,
+    });
+
     const lookup = await lookupPerson(nm.phone_number);
     if (!lookup || !lookup.personId) continue;
 
+    // Opdater med Pipedrive-kobling
     messages.upsert({
       relatel_id: nm.relatel_id,
       direction: nm.direction,
@@ -219,6 +311,10 @@ async function fetchNewMessages() {
   }
 }
 
+// ============================================================
+// OPTIMERET: Spring kontakter over som allerede er tjekket
+// Hent kun kommentarer for kontakter med aendringer
+// ============================================================
 async function fetchNewNotes() {
   const lastChecked = state.get('last_notes_check') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   try {
@@ -227,6 +323,10 @@ async function fetchNewNotes() {
 
     for (const contact of contacts) {
       if (!contact.number) continue;
+
+      // Spring over kontakter uden nylige aendringer (baseret paa updated_at)
+      if (contact.updated_at && new Date(contact.updated_at) < new Date(lastChecked)) continue;
+
       const comments = await relatel.getContactComments(contact.id);
       if (!comments || comments.length === 0) continue;
 
@@ -287,7 +387,8 @@ async function fetchNewNotes() {
 }
 
 // ============================================================
-// Kontakt-berigelse: Pipedrive -> Relatel
+// OPTIMERET: Track berigede kontakter saa vi ikke scanner
+// de samme 200 kontakter hvert 5. minut
 // ============================================================
 async function enrichContacts() {
   try {
@@ -296,16 +397,31 @@ async function enrichContacts() {
 
     for (const contact of contacts) {
       if (!contact.number) continue;
+
+      // Spring over allerede berigede kontakter (in-memory cache)
+      if (enrichedContactIds.has(String(contact.id))) continue;
+
       // Spring over hvis kontakten allerede har et rigtigt navn (ikke bare et nummer)
-      if (contact.name && !/^\+?\d[\d\s\-().]+$/.test(contact.name.trim())) continue;
+      if (contact.name && !/^\+?\d[\d\s\-().]+$/.test(contact.name.trim())) {
+        // Marker som beriget saa vi ikke tjekker igen
+        enrichedContactIds.add(String(contact.id));
+        continue;
+      }
 
       // Slaa op i Pipedrive
       const person = await pipedrive.findPersonByPhone(contact.number);
-      if (!person) continue;
+      if (!person) {
+        // Ingen match i Pipedrive - marker saa vi ikke slaar op igen
+        enrichedContactIds.add(String(contact.id));
+        continue;
+      }
 
       // Hent fulde persondetaljer (navn, firma, email)
       const details = await pipedrive.getPersonById(person.id);
-      if (!details || !details.name) continue;
+      if (!details || !details.name) {
+        enrichedContactIds.add(String(contact.id));
+        continue;
+      }
 
       // Byg visningsnavn: "Navn (Firma)"
       const orgName = (details.org_id && details.org_id.name) || null;
@@ -323,6 +439,7 @@ async function enrichContacts() {
         email: email,
       });
 
+      enrichedContactIds.add(String(contact.id));
       enriched++;
       console.log('[Enrich] ' + contact.number + ' -> ' + displayName + (email ? ' (' + email + ')' : ''));
     }
@@ -340,7 +457,7 @@ async function enrichContacts() {
 function start() {
   const INTERVAL = config.pollIntervalSeconds || 30;
 
-  // Opkald: hvert 30. sekund
+  // Opkald: hvert 30. sekund (konfigurerbart via POLL_INTERVAL_SECONDS)
   cron.schedule('*/' + INTERVAL + ' * * * * *', async () => {
     try { await pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
   });
@@ -348,6 +465,11 @@ function start() {
   // SMS: hvert minut
   cron.schedule('0 * * * * *', async () => {
     try { await fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
+  });
+
+  // Retry manglende recordings: hvert minut (10s offset)
+  cron.schedule('10 * * * * *', async () => {
+    try { await retryMissingRecordings(); } catch (e) { console.error('[Retry] Fejl:', e.message); }
   });
 
   // Transskription: hvert minut
@@ -360,12 +482,12 @@ function start() {
     try { await fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
   });
 
-  // Kontakt-berigelse: hvert 5. minut (test), skift til daglig senere
+  // Kontakt-berigelse: hvert 5. minut
   cron.schedule('15 */5 * * * *', async () => {
     try { await enrichContacts(); } catch (e) { console.error('[Enrich] Fejl:', e.message); }
   });
 
-  console.log('[Poll] Cron-jobs startet (opkald: 30s, SMS: 60s, transskription: 60s, noter: 5min, berigelse: 5min).');
+  console.log('[Poll] Cron-jobs startet (opkald: ' + INTERVAL + 's, SMS: 60s, transskription: 60s, noter: 5min, berigelse: 5min).');
 }
 
-module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions, enrichContacts };
+module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions, enrichContacts, retryMissingRecordings };
