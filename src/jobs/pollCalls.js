@@ -203,34 +203,44 @@ async function processTranscriptions() {
 // ============================================================
 async function retryMissingRecordings() {
   try {
-    // Find opkald fra sidste 24 timer uden recording_url
+    // Find opkald fra sidste 2 timer uden recording_url
     const stale = db.prepare(`
       SELECT relatel_uuid FROM calls
       WHERE recording_url IS NULL
         AND recording_expired = 0
         AND ended_at IS NOT NULL
-        AND datetime(ended_at) > datetime('now', '-24 hours')
+        AND datetime(ended_at) > datetime('now', '-2 hours')
       ORDER BY ended_at DESC
-      LIMIT 20
+      LIMIT 50
     `).all();
 
     if (stale.length === 0) return;
+    const staleUuids = new Set(stale.map(r => r.relatel_uuid));
     console.log('[Retry] Forsoeger at hente recording for ' + stale.length + ' opkald');
 
-    for (const row of stale) {
-      try {
-        const fullCall = await relatel.getCall(row.relatel_uuid);
-        if (!fullCall) continue;
-        const detailed = relatel.normalizeCall(fullCall);
-        if (detailed.recording_url) {
-          db.prepare('UPDATE calls SET recording_url = ?, transcription_status = ? WHERE relatel_uuid = ?')
-            .run(detailed.recording_url, 'pending', row.relatel_uuid);
-          console.log('[Retry] Recording fundet for ' + row.relatel_uuid);
-        }
-      } catch (e) {
-        console.error('[Retry] Fejl for ' + row.relatel_uuid + ':', e.message);
+    // Hent alle opkald fra sidste 2 timer via GET /calls (som virker)
+    // Det er meget billigere end at hente hver enkelt og POST /calls returnerer 404
+    const since = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    let rawCalls;
+    try {
+      rawCalls = await relatel.getCalls({ endedAfter: since, limit: 200 });
+    } catch (e) {
+      console.error('[Retry] Kunne ikke hente call-liste:', e.message);
+      return;
+    }
+
+    let updated = 0;
+    for (const rc of rawCalls) {
+      const nc = relatel.normalizeCall(rc);
+      if (!nc.relatel_uuid || !staleUuids.has(nc.relatel_uuid)) continue;
+      if (nc.recording_url) {
+        db.prepare('UPDATE calls SET recording_url = ?, transcription_status = ? WHERE relatel_uuid = ?')
+          .run(nc.recording_url, 'pending', nc.relatel_uuid);
+        console.log('[Retry] Recording fundet for ' + nc.relatel_uuid);
+        updated++;
       }
     }
+    if (updated === 0) console.log('[Retry] Ingen nye recordings fundet endnu (' + stale.length + ' venter)');
   } catch (e) {
     console.error('[Retry] Fejl:', e.message);
   }
