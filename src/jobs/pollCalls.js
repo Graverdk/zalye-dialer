@@ -8,8 +8,12 @@ const { transcribe } = require('../services/transcription');
 const claude = require('../services/claude');
 
 // In-memory cache: phone number -> { personId, latestDealId, ts }
+// Positive matches caches i 10 min (sjældent skifter de).
+// Negative matches caches kun i 60 sek så nyoprettede personer
+// i Pipedrive findes hurtigt (vigtigt: lead → person konvertering).
 const personCache = new Map();
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutter
+const POSITIVE_TTL = 10 * 60 * 1000;
+const NEGATIVE_TTL = 60 * 1000;
 
 // Cache over berigede kontakter (Relatel contact ID -> true)
 // Undgaar at scanne samme kontakter hvert 5. minut
@@ -17,8 +21,9 @@ const enrichedContactIds = new Set();
 
 async function lookupPerson(phoneNumber) {
   const cached = personCache.get(phoneNumber);
-  if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
-    return cached;
+  if (cached) {
+    const ttl = cached.personId ? POSITIVE_TTL : NEGATIVE_TTL;
+    if ((Date.now() - cached.ts) < ttl) return cached;
   }
   const person = await pipedrive.findPersonByPhone(phoneNumber);
   if (!person) {
@@ -32,7 +37,9 @@ async function lookupPerson(phoneNumber) {
 }
 
 async function pollNewCalls() {
-  const lastChecked = state.get('last_call_check') || new Date(Date.now() - 60000).toISOString();
+  // Default ved første kørsel: 24 timer tilbage (sikkerhedsnet hvis DB-volumet
+  // mistes ved Railway-redeploy — så taber vi ikke alle opkald siden sidste deploy)
+  const lastChecked = state.get('last_call_check') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   console.log('[Poll] Henter opkald afsluttet efter: ' + lastChecked);
   const rawCalls = await relatel.getCalls({ endedAfter: lastChecked });
   console.log('[Poll] Fandt ' + rawCalls.length + ' afsluttede opkald');
@@ -134,13 +141,28 @@ async function processTranscriptions() {
         diarizedTranscription,
       };
 
+      // Re-try Pipedrive-lookup hvis vi ikke fik fat i personen ved første poll
+      // (typisk fordi lead først blev konverteret til person efter opkaldet)
+      let personId = call.pipedrive_person_id;
+      let dealId = call.pipedrive_deal_id;
+      if (!personId && !call.pipedrive_note_id && call.phone_number) {
+        const lookup = await lookupPerson(call.phone_number);
+        if (lookup && lookup.personId) {
+          personId = lookup.personId;
+          dealId = lookup.latestDealId || dealId;
+          db.prepare('UPDATE calls SET pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
+            .run(personId, dealId, call.relatel_uuid);
+          console.log('[AI] Sent-link til Pipedrive lykkedes for ' + call.phone_number + ' -> personId ' + personId);
+        }
+      }
+
       if (call.pipedrive_note_id) {
         console.log('[AI] Opdaterer Pipedrive-note ' + call.pipedrive_note_id + ' med transskription...');
         await pipedrive.updateNote(call.pipedrive_note_id, { callData });
-      } else if (call.pipedrive_person_id || call.pipedrive_deal_id) {
+      } else if (personId || dealId) {
         const newNoteId = await pipedrive.createCallNote({
-          personId: call.pipedrive_person_id,
-          dealId: call.pipedrive_deal_id,
+          personId,
+          dealId,
           callData,
         });
         if (newNoteId) {
@@ -148,6 +170,8 @@ async function processTranscriptions() {
             .run(newNoteId, call.relatel_uuid);
           console.log('[AI] Ny Pipedrive-note oprettet: ' + newNoteId);
         }
+      } else {
+        console.log('[AI] Ingen Pipedrive-match for ' + call.phone_number + ' — note ikke oprettet');
       }
 
       calls.updateTranscription(call.relatel_uuid, {
@@ -271,7 +295,7 @@ async function fetchNewMessages() {
       }
       const chatMessages = (full && (full.messages || full.sms || [])) || [];
       for (const m of chatMessages) {
-        const msgId = m.id || m.uuid ? String(m.id || m.uuid) : null;
+        const msgId = (m.id || m.uuid) ? String(m.id || m.uuid) : null;
         if (!msgId) continue;
         const existing = messages.getById(msgId);
         if (existing) continue;
@@ -482,6 +506,19 @@ async function enrichContacts() {
 
 function start() {
   const INTERVAL = config.pollIntervalSeconds || 30;
+
+  // Reset alle opkald der hænger i 'processing' (fx pga. tidligere crash/restart)
+  // Ellers ville de aldrig blive plukket op igen af processTranscriptions
+  try {
+    const result = db.prepare(
+      "UPDATE calls SET transcription_status = 'pending' WHERE transcription_status = 'processing'"
+    ).run();
+    if (result.changes > 0) {
+      console.log('[Init] Resat ' + result.changes + ' h\u00e6ngende processing-opkald til pending');
+    }
+  } catch (e) {
+    console.error('[Init] Kunne ikke resette processing-status:', e.message);
+  }
 
   // Opkald: hvert 30. sekund (konfigurerbart via POLL_INTERVAL_SECONDS)
   cron.schedule('*/' + INTERVAL + ' * * * * *', async () => {

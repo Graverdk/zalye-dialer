@@ -81,9 +81,9 @@ router.get('/:uuid', (req, res) => {
 // Manuel trigger af polling (til test)
 // ============================================================
 router.post('/poll', async (req, res) => {
-  const { fetchNewCalls } = require('../jobs/pollCalls');
+  const { pollNewCalls } = require('../jobs/pollCalls');
   try {
-    await fetchNewCalls();
+    await pollNewCalls();
     res.json({ success: true, message: 'Polling gennemført' });
   } catch (err) {
     res.status(500).json({ error: err.message });
