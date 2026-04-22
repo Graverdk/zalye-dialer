@@ -126,6 +126,29 @@ router.get('/debug/relatel', async (req, res) => {
 });
 
 // ============================================================
+// POST /api/calls/retry-transcription
+// Find alle opkald der har recording_url men ingen transskription
+// og marker dem 'pending' igen, så processTranscriptions tager dem.
+// ============================================================
+router.post('/retry-transcription', async (req, res) => {
+  const { db } = require('../db/database');
+  const { processTranscriptions } = require('../jobs/pollCalls');
+  try {
+    const result = db.prepare(`
+      UPDATE calls
+      SET transcription_status = 'pending'
+      WHERE recording_url IS NOT NULL
+        AND recording_url != ''
+        AND (transcription IS NULL OR transcription = '')
+    `).run();
+    processTranscriptions().catch(e => console.error('[Retry] Transskription-kick fejlede:', e.message));
+    res.json({ success: true, requeued: result.changes, message: 'Transskription kører i baggrunden' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // POST /api/calls/backfill?days=7
 // Catch-up: hent alle opkald fra sidste N dage og (re)processer
 // dem der mangler transskription eller Pipedrive-note.
