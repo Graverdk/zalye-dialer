@@ -101,24 +101,25 @@ router.get('/debug/relatel', async (req, res) => {
   const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
   try {
     const rawCalls = await relatel.getCalls({ endedAfter: since, limit: 50 });
-    const analyzed = rawCalls.map(rc => ({
-      call_uuid: rc.call_uuid,
-      direction: rc.direction,
-      from_number: rc.from_number,
-      to_number: rc.to_number,
-      remote_number: rc.remote_number,
-      talk_duration: rc.talk_duration,
-      ended_at: rc.ended_at,
-      // Alle felter der kunne indeholde en recording URL
-      recording: rc.recording,
-      recordings: rc.recordings,
-      recording_url: rc.recording_url,
-      sound: rc.sound,
-      audio: rc.audio,
-      // Alle top-level nøgler så vi kan spotte nye felter
-      _all_keys: Object.keys(rc),
-    }));
-    res.json({ hours, count: analyzed.length, calls: analyzed });
+
+    // Hent også fuld enkelt-opkald for et udgående opkald (med varighed)
+    // for at se om POST /calls returnerer ekstra recording-data
+    const outgoingWithTalk = rawCalls.find(c => c.direction === 'outgoing' && c.talk_duration > 0);
+    let singleCallDetail = null;
+    if (outgoingWithTalk) {
+      try {
+        singleCallDetail = await relatel.getCall(outgoingWithTalk.call_uuid);
+      } catch (e) {
+        singleCallDetail = { error: e.message };
+      }
+    }
+
+    res.json({
+      hours,
+      count: rawCalls.length,
+      rawCalls, // FULD rå data for alle opkald
+      singleCallDetail, // FULD rå data fra POST /calls (enkelt-opkald endpoint)
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
