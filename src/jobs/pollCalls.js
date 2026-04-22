@@ -242,6 +242,7 @@ async function backfillCalls(days = 7) {
   let linked = 0;
   let alreadyDone = 0;
   let requeued = 0;
+  const backfillStats = { notesCreated: 0 };
 
   for (const rc of rawCalls) {
     const nc = relatel.normalizeCall(rc);
@@ -273,12 +274,38 @@ async function backfillCalls(days = 7) {
     imported++;
 
     // Prøv at link til Pipedrive hvis vi ikke har person_id endnu
-    if (!existing.pipedrive_person_id) {
+    let personId = existing.pipedrive_person_id;
+    let dealId = existing.pipedrive_deal_id;
+    if (!personId) {
       const lookup = await lookupPerson(nc.phone_number);
       if (lookup && lookup.personId) {
+        personId = lookup.personId;
+        dealId = lookup.latestDealId || null;
         db.prepare('UPDATE calls SET pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
-          .run(lookup.personId, lookup.latestDealId || null, nc.relatel_uuid);
+          .run(personId, dealId, nc.relatel_uuid);
         linked++;
+      }
+    }
+
+    // Opret initial note i Pipedrive hvis der er match og ingen note endnu
+    // (transskription tilføjes senere via processTranscriptions hvis recording findes)
+    let notesCreated = 0;
+    if (personId && !existing.pipedrive_note_id) {
+      const noteId = await pipedrive.createCallNote({
+        personId,
+        dealId,
+        callData: {
+          direction: nc.direction,
+          phoneNumber: nc.phone_number,
+          startedAt: nc.started_at,
+          durationSec: nc.duration_sec,
+        },
+      });
+      if (noteId) {
+        db.prepare('UPDATE calls SET pipedrive_note_id = ? WHERE relatel_uuid = ?')
+          .run(noteId, nc.relatel_uuid);
+        notesCreated++;
+        console.log('[Backfill] Initial note oprettet (' + noteId + ') for ' + nc.phone_number);
       }
     }
 
@@ -288,12 +315,16 @@ async function backfillCalls(days = 7) {
         .run(nc.relatel_uuid);
       requeued++;
     }
+
+    // Statistik
+    backfillStats.notesCreated = (backfillStats.notesCreated || 0) + notesCreated;
   }
 
   const summary = {
     fetched: rawCalls.length,
     imported,
     linkedToPipedrive: linked,
+    notesCreated: backfillStats.notesCreated || 0,
     requeuedForTranscription: requeued,
     alreadyDone,
   };
