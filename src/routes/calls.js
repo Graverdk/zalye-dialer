@@ -91,6 +91,40 @@ router.post('/poll', async (req, res) => {
 });
 
 // ============================================================
+// GET /api/calls/debug/relatel?hours=24
+// Dump rå Relatel data for de sidste N timer — til debug af
+// recording_url-feltet som ikke altid kommer igennem korrekt
+// ============================================================
+router.get('/debug/relatel', async (req, res) => {
+  const relatel = require('../services/relatel');
+  const hours = Math.min(Math.max(parseInt(req.query.hours) || 24, 1), 168);
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  try {
+    const rawCalls = await relatel.getCalls({ endedAfter: since, limit: 50 });
+    const analyzed = rawCalls.map(rc => ({
+      call_uuid: rc.call_uuid,
+      direction: rc.direction,
+      from_number: rc.from_number,
+      to_number: rc.to_number,
+      remote_number: rc.remote_number,
+      talk_duration: rc.talk_duration,
+      ended_at: rc.ended_at,
+      // Alle felter der kunne indeholde en recording URL
+      recording: rc.recording,
+      recordings: rc.recordings,
+      recording_url: rc.recording_url,
+      sound: rc.sound,
+      audio: rc.audio,
+      // Alle top-level nøgler så vi kan spotte nye felter
+      _all_keys: Object.keys(rc),
+    }));
+    res.json({ hours, count: analyzed.length, calls: analyzed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // POST /api/calls/backfill?days=7
 // Catch-up: hent alle opkald fra sidste N dage og (re)processer
 // dem der mangler transskription eller Pipedrive-note.
