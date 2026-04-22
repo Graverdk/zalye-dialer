@@ -221,6 +221,87 @@ async function processTranscriptions() {
 }
 
 // ============================================================
+// CATCH-UP: Hent alle opkald fra sidste N dage og sæt dem
+// i kø til transskription + Pipedrive-sync. Bruges til at
+// indhente tabte opkald efter fx et servernedbrud.
+// ============================================================
+async function backfillCalls(days = 7) {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  console.log('[Backfill] Henter opkald siden ' + since + ' (sidste ' + days + ' dage)');
+
+  let rawCalls;
+  try {
+    rawCalls = await relatel.getCalls({ endedAfter: since, limit: 500 });
+  } catch (e) {
+    console.error('[Backfill] Kunne ikke hente opkald fra Relatel:', e.message);
+    throw e;
+  }
+  console.log('[Backfill] Fandt ' + rawCalls.length + ' opkald fra Relatel');
+
+  let imported = 0;
+  let linked = 0;
+  let alreadyDone = 0;
+  let requeued = 0;
+
+  for (const rc of rawCalls) {
+    const nc = relatel.normalizeCall(rc);
+    if (!nc.phone_number || !nc.relatel_uuid) continue;
+
+    // Hvis der ikke er recording_url i listen, prøv at hente enkelt-opkald
+    if (!nc.recording_url) {
+      try {
+        const fullCall = await relatel.getCall(nc.relatel_uuid);
+        if (fullCall) {
+          const detailed = relatel.normalizeCall(fullCall);
+          if (detailed.recording_url) nc.recording_url = detailed.recording_url;
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Upsert (ændrer intet hvis opkaldet allerede er i DB, undtagen recording_url)
+    calls.upsert(nc);
+
+    const existing = calls.getByUuid(nc.relatel_uuid);
+    if (!existing) continue;
+
+    // Tjek om opkaldet allerede er fuldt processeret
+    if (existing.pipedrive_note_id && existing.transcription_status === 'done' && existing.transcription) {
+      alreadyDone++;
+      continue;
+    }
+
+    imported++;
+
+    // Prøv at link til Pipedrive hvis vi ikke har person_id endnu
+    if (!existing.pipedrive_person_id) {
+      const lookup = await lookupPerson(nc.phone_number);
+      if (lookup && lookup.personId) {
+        db.prepare('UPDATE calls SET pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
+          .run(lookup.personId, lookup.latestDealId || null, nc.relatel_uuid);
+        linked++;
+      }
+    }
+
+    // Sæt transcription_status til pending hvis der er en recording og den ikke er done
+    if (nc.recording_url && existing.transcription_status !== 'done') {
+      db.prepare("UPDATE calls SET transcription_status = 'pending' WHERE relatel_uuid = ?")
+        .run(nc.relatel_uuid);
+      requeued++;
+    }
+  }
+
+  const summary = {
+    fetched: rawCalls.length,
+    imported,
+    linkedToPipedrive: linked,
+    requeuedForTranscription: requeued,
+    alreadyDone,
+  };
+  console.log('[Backfill] Færdig:', JSON.stringify(summary));
+  return summary;
+}
+
+// ============================================================
 // FIX: Genhent opkald der mangler recording_url
 // Relatel har ofte 1-2 min forsinkelse paa optagelser
 // Uden denne funktion bliver de aldrig transskriberet
@@ -553,4 +634,4 @@ function start() {
   console.log('[Poll] Cron-jobs startet (opkald: ' + INTERVAL + 's, SMS: 60s, transskription: 60s, noter: 5min, berigelse: 5min).');
 }
 
-module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions, enrichContacts, retryMissingRecordings };
+module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions, enrichContacts, retryMissingRecordings, backfillCalls };

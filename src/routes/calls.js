@@ -91,6 +91,24 @@ router.post('/poll', async (req, res) => {
 });
 
 // ============================================================
+// POST /api/calls/backfill?days=7
+// Catch-up: hent alle opkald fra sidste N dage og (re)processer
+// dem der mangler transskription eller Pipedrive-note.
+// ============================================================
+router.post('/backfill', async (req, res) => {
+  const { backfillCalls, processTranscriptions } = require('../jobs/pollCalls');
+  const days = Math.min(Math.max(parseInt(req.query.days) || 7, 1), 30);
+  try {
+    const summary = await backfillCalls(days);
+    // Kick-start transskription med det samme så brugeren ser fremgang hurtigt
+    processTranscriptions().catch(e => console.error('[Backfill] Transskription-kick fejlede:', e.message));
+    res.json({ success: true, days, summary, message: 'Backfill startet — transskription kører i baggrunden' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // Hjælpefunktion: Formatér et database-opkald til API-svar
 // ============================================================
 function formatCall(call) {
