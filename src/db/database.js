@@ -47,6 +47,8 @@ db.exec(`
     summary              TEXT,
     action_points        TEXT,              -- JSON array af strenge
     topics               TEXT,             -- JSON array af strenge
+    transcription_error  TEXT,              -- seneste fejlbesked hvis failed
+    transcription_attempts INTEGER DEFAULT 0,  -- antal forsøg (max 3)
 
     created_at      INTEGER DEFAULT (strftime('%s', 'now')),
     updated_at      INTEGER DEFAULT (strftime('%s', 'now'))
@@ -182,6 +184,20 @@ db.exec(`
     value TEXT
   );
 `);
+
+// ============================================================
+// Migrations: tilføj kolonner til eksisterende tabeller
+// (CREATE TABLE IF NOT EXISTS tilføjer ikke nye kolonner hvis tabellen findes)
+// ============================================================
+function ensureColumn(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some(c => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    console.log('[DB] Tilføjet kolonne ' + table + '.' + column);
+  }
+}
+ensureColumn('calls', 'transcription_error', 'TEXT');
+ensureColumn('calls', 'transcription_attempts', 'INTEGER DEFAULT 0');
 
 // ============================================================
 // Hjælpefunktioner

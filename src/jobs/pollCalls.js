@@ -97,9 +97,10 @@ async function processTranscriptions() {
   console.log('[AI] Behandler ' + pending.length + ' opkald...');
 
   for (const call of pending) {
-    db.prepare("UPDATE calls SET transcription_status = 'processing' WHERE relatel_uuid = ?")
+    db.prepare("UPDATE calls SET transcription_status = 'processing', transcription_attempts = COALESCE(transcription_attempts, 0) + 1 WHERE relatel_uuid = ?")
       .run(call.relatel_uuid);
-    console.log('[AI] Behandler: ' + call.relatel_uuid);
+    const attempt = (call.transcription_attempts || 0) + 1;
+    console.log('[AI] Behandler: ' + call.relatel_uuid + ' (forsøg ' + attempt + ')');
 
     try {
       console.log('[AI] Downloader optagelse...');
@@ -229,17 +230,37 @@ async function processTranscriptions() {
         }
       }
 
+      // Nulstil fejl-tilstand ved success
+      db.prepare("UPDATE calls SET transcription_error = NULL WHERE relatel_uuid = ?")
+        .run(call.relatel_uuid);
       console.log('[AI] Faerdig: ' + call.relatel_uuid);
     } catch (err) {
-      console.error('[AI] Fejl ved transskription for ' + call.relatel_uuid + ': ' + err.message);
-      // Marker som 'failed' (ikke 'done') så vi kan retry senere.
-      // 'done' var forkert — det skjulte fejlen og gjorde at opkaldet aldrig blev prøvet igen.
-      calls.updateTranscription(call.relatel_uuid, {
-        status: 'failed',
-        transcription: null,
-        summary: null,
-      });
+      console.error('[AI] Fejl ved transskription for ' + call.relatel_uuid + ' (forsøg ' + attempt + '): ' + err.message);
+      // Gem fejl-besked i DB så vi kan se hvad der gik galt
+      db.prepare("UPDATE calls SET transcription_status = 'failed', transcription_error = ? WHERE relatel_uuid = ?")
+        .run(err.message.substring(0, 500), call.relatel_uuid);
     }
+  }
+}
+
+// ============================================================
+// Auto-retry: find failed opkald med < 3 forsøg og sæt dem til pending igen
+// Kører hvert 5. minut via cron — så user skal aldrig manuelt kalde retry
+// ============================================================
+async function autoRetryFailed() {
+  const MAX_ATTEMPTS = 3;
+  const result = db.prepare(`
+    UPDATE calls
+    SET transcription_status = 'pending'
+    WHERE transcription_status = 'failed'
+      AND COALESCE(transcription_attempts, 0) < ?
+      AND recording_url IS NOT NULL
+      AND recording_url != ''
+  `).run(MAX_ATTEMPTS);
+  if (result.changes > 0) {
+    console.log('[AutoRetry] Sat ' + result.changes + ' failed opkald tilbage til pending');
+    // Kick-start processering med det samme (i stedet for at vente på næste cron-tick)
+    processTranscriptions().catch(e => console.error('[AutoRetry] Fejl:', e.message));
   }
 }
 
@@ -697,7 +718,12 @@ function start() {
     try { await enrichContacts(); } catch (e) { console.error('[Enrich] Fejl:', e.message); }
   });
 
-  console.log('[Poll] Cron-jobs startet (opkald: ' + INTERVAL + 's, SMS: 60s, transskription: 60s, noter: 5min, berigelse: 5min).');
+  // Auto-retry failed transskriptioner: hvert 5. minut (45 sek offset for at undgå overlap)
+  cron.schedule('45 */5 * * * *', async () => {
+    try { await autoRetryFailed(); } catch (e) { console.error('[AutoRetry] Fejl:', e.message); }
+  });
+
+  console.log('[Poll] Cron-jobs startet (opkald: ' + INTERVAL + 's, SMS: 60s, transskription: 60s, noter: 5min, berigelse: 5min, auto-retry: 5min).');
 }
 
-module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions, enrichContacts, retryMissingRecordings, backfillCalls };
+module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions, enrichContacts, retryMissingRecordings, backfillCalls, autoRetryFailed };

@@ -168,6 +168,8 @@ router.get('/debug/db-status', (req, res) => {
         recording_url IS NOT NULL AS has_recording,
         transcription_status,
         LENGTH(transcription) AS transcription_length,
+        transcription_attempts,
+        transcription_error,
         pipedrive_person_id IS NOT NULL AS linked,
         pipedrive_note_id IS NOT NULL AS has_note
       FROM calls
@@ -180,6 +182,21 @@ router.get('/debug/db-status', (req, res) => {
     `).all();
 
     res.json({ summary, recent: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/calls/reset-attempts — nulstil attempt-tæller så failed kan prøves igen
+router.post('/reset-attempts', (req, res) => {
+  const { db } = require('../db/database');
+  try {
+    const result = db.prepare(`
+      UPDATE calls SET transcription_attempts = 0, transcription_status = 'pending'
+      WHERE transcription_status = 'failed'
+        AND recording_url IS NOT NULL AND recording_url != ''
+    `).run();
+    res.json({ success: true, reset: result.changes });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
