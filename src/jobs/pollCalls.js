@@ -231,9 +231,11 @@ async function processTranscriptions() {
 
       console.log('[AI] Faerdig: ' + call.relatel_uuid);
     } catch (err) {
-      console.error('[AI] Fejl ved transskription: ' + err.message);
+      console.error('[AI] Fejl ved transskription for ' + call.relatel_uuid + ': ' + err.message);
+      // Marker som 'failed' (ikke 'done') så vi kan retry senere.
+      // 'done' var forkert — det skjulte fejlen og gjorde at opkaldet aldrig blev prøvet igen.
       calls.updateTranscription(call.relatel_uuid, {
-        status: 'done',
+        status: 'failed',
         transcription: null,
         summary: null,
       });

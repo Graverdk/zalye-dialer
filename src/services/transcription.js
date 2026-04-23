@@ -56,7 +56,7 @@ async function transcribe(audioBuffer, contentType = 'audio/mpeg', options = {})
       ...form.getHeaders(),
     },
     body: form,
-    timeout: 180000, // Op til 3 min for lange samtaler
+    timeout: 600000, // Op til 10 min — nødvendigt for lange samtaler (>15 min lyd)
   });
 
   if (!res.ok) {

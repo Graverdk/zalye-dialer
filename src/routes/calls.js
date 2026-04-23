@@ -194,15 +194,33 @@ router.post('/retry-transcription', async (req, res) => {
   const { db } = require('../db/database');
   const { processTranscriptions } = require('../jobs/pollCalls');
   try {
-    const result = db.prepare(`
+    // 1) Markér ubesvarede/uden-optagelse som 'done' så de ikke forurener køen
+    //    (de har ingen recording_url og kan ikke transskriberes)
+    const cleaned = db.prepare(`
+      UPDATE calls
+      SET transcription_status = 'done'
+      WHERE transcription_status = 'pending'
+        AND (recording_url IS NULL OR recording_url = '')
+    `).run();
+
+    // 2) Re-queue opkald med recording men uden transcription (inkl. tidligere failed)
+    const requeued = db.prepare(`
       UPDATE calls
       SET transcription_status = 'pending'
       WHERE recording_url IS NOT NULL
         AND recording_url != ''
         AND (transcription IS NULL OR transcription = '')
+        AND transcription_status IN ('done', 'failed', 'pending', 'processing')
     `).run();
+
     processTranscriptions().catch(e => console.error('[Retry] Transskription-kick fejlede:', e.message));
-    res.json({ success: true, requeued: result.changes, message: 'Transskription kører i baggrunden' });
+
+    res.json({
+      success: true,
+      cleanedFalsePending: cleaned.changes,
+      requeuedForTranscription: requeued.changes,
+      message: 'Transskription kører i baggrunden',
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
