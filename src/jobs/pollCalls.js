@@ -556,24 +556,19 @@ async function enrichContacts() {
   try {
     const contacts = await relatel.getContacts({ limit: 200 });
     let enriched = 0;
+    let inSync = 0;
 
     for (const contact of contacts) {
       if (!contact.number) continue;
 
       // Spring over allerede berigede kontakter (in-memory cache)
+      // OBS: cache nulstilles ved server-restart så vi indhenter evt. ændringer
       if (enrichedContactIds.has(String(contact.id))) continue;
 
-      // Spring over hvis kontakten allerede har et rigtigt navn (ikke bare et nummer)
-      if (contact.name && !/^\+?\d[\d\s\-().]+$/.test(contact.name.trim())) {
-        // Marker som beriget saa vi ikke tjekker igen
-        enrichedContactIds.add(String(contact.id));
-        continue;
-      }
-
-      // Slaa op i Pipedrive
+      // Slå op i Pipedrive — KILDE TIL SANDHED
       const person = await pipedrive.findPersonByPhone(contact.number);
       if (!person) {
-        // Ingen match i Pipedrive - marker saa vi ikke slaar op igen
+        // Ingen match i Pipedrive — lad Relatel-navnet stå som det er
         enrichedContactIds.add(String(contact.id));
         continue;
       }
@@ -585,31 +580,48 @@ async function enrichContacts() {
         continue;
       }
 
-      // Byg visningsnavn: "Navn (Firma)"
+      // Byg ønsket visningsnavn: "Navn (Firma)"
       const orgName = (details.org_id && details.org_id.name) || null;
-      const displayName = orgName
+      const desiredName = orgName
         ? details.name + ' (' + orgName + ')'
         : details.name;
 
-      const email = (details.email && details.email.length > 0)
+      const desiredEmail = (details.email && details.email.length > 0)
         ? details.email[0].value
         : null;
 
-      // Opdater Relatel-kontakt
-      await relatel.updateContact(contact.id, {
-        name: displayName,
-        email: email,
-      });
+      // Hvis Relatel-kontakten allerede matcher Pipedrive → skip update
+      // (undgår at spamme Relatel API med unødvendige opdateringer)
+      const currentName = (contact.name || '').trim();
+      const currentEmail = (contact.email || '').trim();
+      if (currentName === desiredName && (!desiredEmail || currentEmail === desiredEmail)) {
+        enrichedContactIds.add(String(contact.id));
+        inSync++;
+        continue;
+      }
 
-      enrichedContactIds.add(String(contact.id));
-      enriched++;
-      console.log('[Enrich] ' + contact.number + ' -> ' + displayName + (email ? ' (' + email + ')' : ''));
+      // Opdatér Relatel-kontakt med Pipedrive-data (overskriver evt. forkerte navne)
+      try {
+        await relatel.updateContact(contact.id, {
+          name: desiredName,
+          email: desiredEmail,
+        });
+        enrichedContactIds.add(String(contact.id));
+        enriched++;
+        const changeLog = currentName && currentName !== desiredName
+          ? '"' + currentName + '" -> "' + desiredName + '"'
+          : '-> ' + desiredName;
+        console.log('[Enrich] ' + contact.number + ' ' + changeLog);
+      } catch (updateErr) {
+        console.error('[Enrich] Fejl ved opdatering af ' + contact.number + ':', updateErr.message);
+      }
     }
 
     if (enriched > 0) {
-      console.log('[Enrich] Berigede ' + enriched + ' kontakter');
-    } else {
-      console.log('[Enrich] Ingen kontakter at berige');
+      console.log('[Enrich] Opdaterede ' + enriched + ' kontakter i Relatel (Pipedrive er sandhed)');
+    }
+    if (inSync > 0) {
+      console.log('[Enrich] ' + inSync + ' kontakter er allerede i sync');
     }
   } catch (e) {
     console.error('[Enrich] Fejl:', e.message);
