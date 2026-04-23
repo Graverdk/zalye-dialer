@@ -116,7 +116,23 @@ async function processTranscriptions() {
       let topics = null;
       let analysisResult = null;
 
-      if (transcription) {
+      // Detektér ubesvarede / for-korte opkald og spring Claude-analyse over
+      // (så vi undgår meningsløse "handlingspunkter" som at "tjekke optagelsen")
+      const shortCallThreshold = 25; // sek
+      const minMeaningfulTextLength = 30; // tegn
+      const isUnanswered = (
+        (call.duration_sec != null && call.duration_sec < shortCallThreshold) ||
+        !transcription ||
+        transcription.replace(/[^a-zA-ZæøåÆØÅ]/g, '').length < minMeaningfulTextLength
+      );
+
+      if (isUnanswered) {
+        console.log('[AI] Springer Claude-analyse over — ubesvaret/for kort opkald');
+        const dirLabel = call.direction === 'outgoing' ? 'Udgående' : 'Indgående';
+        summary = `${dirLabel} opkald uden besvaret samtale (varighed: ${call.duration_sec || 0}s).`;
+        actionPoints = [];
+        topics = [];
+      } else if (transcription) {
         console.log('[AI] Analyserer med Claude...');
         const analysis = await claude.analyzeCall({
           transcription: diarizedTranscription || transcription,
