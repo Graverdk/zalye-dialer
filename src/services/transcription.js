@@ -49,20 +49,40 @@ async function transcribe(audioBuffer, contentType = 'audio/mpeg', options = {})
   // Biased keywords hjælper Scribe genkende egennavne — sendes som bias_keywords
   form.append('bias_keywords', JSON.stringify(DANISH_BIASED_KEYWORDS));
 
-  const res = await fetch(SCRIBE_URL, {
-    method: 'POST',
-    headers: {
-      'xi-api-key': config.elevenlabs.apiKey,
-      ...form.getHeaders(),
-    },
-    body: form,
-    timeout: 600000, // Op til 10 min — nødvendigt for lange samtaler (>15 min lyd)
-  });
+  const startTime = Date.now();
+  let res;
+  try {
+    res = await fetch(SCRIBE_URL, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': config.elevenlabs.apiKey,
+        ...form.getHeaders(),
+      },
+      body: form,
+      timeout: 600000, // Op til 10 min — nødvendigt for lange samtaler (>15 min lyd)
+    });
+  } catch (fetchErr) {
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    throw new Error('Scribe netværksfejl efter ' + elapsed + 's: ' + fetchErr.message);
+  }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
-    throw new Error('ElevenLabs Scribe fejl ' + res.status + ': ' + errText.substring(0, 400));
+    // Specialcase kendte fejl så de er lette at spotte i logs
+    if (res.status === 401) {
+      throw new Error('Scribe 401 unauthorized efter ' + elapsed + 's — tjek ELEVENLABS_API_KEY');
+    }
+    if (res.status === 429) {
+      throw new Error('Scribe 429 rate limit / credits opbrugt efter ' + elapsed + 's: ' + errText.substring(0, 200));
+    }
+    if (res.status === 413) {
+      throw new Error('Scribe 413 fil for stor (' + audioBuffer.length + ' bytes): ' + errText.substring(0, 200));
+    }
+    throw new Error('Scribe fejl ' + res.status + ' efter ' + elapsed + 's: ' + errText.substring(0, 400));
   }
+  console.log('[Scribe] Svar modtaget efter ' + elapsed + 's');
 
   const result = await res.json();
   const rawText = (result.text || '').trim();
