@@ -152,6 +152,40 @@ router.get('/debug/sms', async (req, res) => {
 });
 
 // ============================================================
+// GET /api/calls/debug/db-status
+// Viser hvad der ligger i vores DB + deres transskriptions-status
+// ============================================================
+router.get('/debug/db-status', (req, res) => {
+  const { db } = require('../db/database');
+  try {
+    const rows = db.prepare(`
+      SELECT
+        relatel_uuid,
+        direction,
+        phone_number,
+        started_at,
+        duration_sec,
+        recording_url IS NOT NULL AS has_recording,
+        transcription_status,
+        LENGTH(transcription) AS transcription_length,
+        pipedrive_person_id IS NOT NULL AS linked,
+        pipedrive_note_id IS NOT NULL AS has_note
+      FROM calls
+      ORDER BY started_at DESC
+      LIMIT 30
+    `).all();
+
+    const summary = db.prepare(`
+      SELECT transcription_status, COUNT(*) as n FROM calls GROUP BY transcription_status
+    `).all();
+
+    res.json({ summary, recent: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // POST /api/calls/retry-transcription
 // Find alle opkald der har recording_url men ingen transskription
 // og marker dem 'pending' igen, så processTranscriptions tager dem.
