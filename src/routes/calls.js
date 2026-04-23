@@ -126,6 +126,32 @@ router.get('/debug/relatel', async (req, res) => {
 });
 
 // ============================================================
+// GET /api/calls/debug/sms?hours=2
+// Dump seneste chats + beskeder fra Relatel
+// ============================================================
+router.get('/debug/sms', async (req, res) => {
+  const relatel = require('../services/relatel');
+  const hours = Math.min(Math.max(parseInt(req.query.hours) || 2, 1), 168);
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  try {
+    const chats = await relatel.getChats({ after: since, limit: 50 });
+    const detailed = [];
+    for (const chat of (chats || []).slice(0, 20)) {
+      const uuid = chat.uuid || chat.id;
+      try {
+        const full = await relatel.getChat(uuid);
+        detailed.push({ chat, full });
+      } catch (e) {
+        detailed.push({ chat, error: e.message });
+      }
+    }
+    res.json({ hours, chatsCount: (chats || []).length, chats: detailed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // POST /api/calls/retry-transcription
 // Find alle opkald der har recording_url men ingen transskription
 // og marker dem 'pending' igen, så processTranscriptions tager dem.
