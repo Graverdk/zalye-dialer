@@ -13,9 +13,12 @@ async function analyzeCall({ transcription, contactName = 'kunden', direction = 
     ? 'udgående opkald til'
     : 'indgående opkald fra';
 
+  // Hvem taler FØRST i lydoptagelsen = hvem tager telefonen:
+  // - Udgående (vi ringer ud): kunden tager telefonen → kunden taler først
+  // - Indgående (kunden ringer): vi tager telefonen → sælgeren taler først
   const starterText = direction === 'outgoing'
-    ? 'Da det er et udgående opkald, er det sælgeren der starter samtalen.'
-    : 'Da det er et indgående opkald, er det kunden der starter samtalen.';
+    ? 'Da det er et udgående opkald (vi ringer ud), er det kunden der tager telefonen og derfor taler først. Sælgeren svarer ved at præsentere sig.'
+    : 'Da det er et indgående opkald (kunden ringer til os), er det sælgeren der tager telefonen og derfor taler først. Kunden præsenterer sig derefter.';
 
   const prompt = `Du er salgs-intelligence assistent for Zalye, en dansk softwarevirksomhed der bygger en platform til håndværkerbranchen.
 

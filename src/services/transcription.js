@@ -79,9 +79,11 @@ async function transcribe(audioBuffer, contentType = 'audio/mpeg', options = {})
 // ============================================================
 // Konverter Scribe's ord-niveau output til "Sælger: ... / Kunde: ..."
 // Scribe giver speaker_id (speaker_0, speaker_1) per ord.
-// Vi mapper speaker_id -> Sælger/Kunde baseret på opkaldsretning:
-// - outgoing: sælger taler først (speaker_0 = Sælger)
-// - incoming: kunde taler først (speaker_0 = Kunde)
+//
+// Vigtigt: Den der taler FØRST er ikke den der "initierede" opkaldet
+// — det er den der TAGER TELEFONEN:
+// - outgoing (vi ringer ud): kunden tager telefonen → KUNDE taler først
+// - incoming (kunden ringer): vi tager telefonen → SÆLGER taler først
 // ============================================================
 function buildDiarizedTranscript(words, direction = 'outgoing') {
   if (!words || words.length === 0) return null;
@@ -91,8 +93,8 @@ function buildDiarizedTranscript(words, direction = 'outgoing') {
   if (!firstSpeech) return null;
 
   const firstSpeaker = firstSpeech.speaker_id;
-  const starterLabel = direction === 'outgoing' ? 'Sælger' : 'Kunde';
-  const otherLabel = direction === 'outgoing' ? 'Kunde' : 'Sælger';
+  const starterLabel = direction === 'outgoing' ? 'Kunde' : 'Sælger';
+  const otherLabel = direction === 'outgoing' ? 'Sælger' : 'Kunde';
 
   const labelFor = (speakerId) => speakerId === firstSpeaker ? starterLabel : otherLabel;
 
