@@ -19,7 +19,8 @@ async function analyzeCall({ transcription, contactName = 'kunden', direction = 
 
   const prompt = `Du er salgs-intelligence assistent for Zalye, en dansk softwarevirksomhed der bygger en platform til håndværkerbranchen.
 
-Du har modtaget en rå transskription af et ${directionText} ${contactName}. Transskriptionen kan indeholde stavefejl, manglende tegnsætning og fejlhørte ord — du skal rense og fortolke den intelligent på dansk.
+Du har modtaget en transskription af et ${directionText} ${contactName}. ${starterText}
+Transskriptionen kan allerede være opdelt i "Sælger:" og "Kunde:" linjer fra automatisk speaker-diarization — brug den opdeling hvis den er der.
 
 Returner ét rent JSON-objekt med præcis disse felter:
 
@@ -44,7 +45,7 @@ Returner ét rent JSON-objekt med præcis disse felter:
 
 Regler:
 - Skriv ALTID på korrekt dansk med æ, ø, å (aldrig "ae", "oe", "aa")
-- Ret åbenlyse stavefejl og fejlhørte ord baseret på kontekst (fx "Sally" → "Zalye", "håndværker" hvis konteksten er klar)
+- Ret åbenlyse stavefejl og fejlhørte ord baseret på kontekst (fx "Sally" → "Zalye", "Jeppe" hvis konteksten er klar)
 - action_points: Konkrete og actionable — ikke vage. Inkluder hvem og hvornår når det fremgår.
 - pain_points: Kun ting kunden faktisk sagde eller antydede. Gæt ikke.
 - objections: Kun reelle indvendinger.
@@ -53,13 +54,10 @@ Regler:
 - conversion_likelihood (1-10): Baseret på helheden af samtalen.
 - ai_coaching_note: Vær specifik og konstruktiv.
 
-DIARIZED_TRANSCRIPTION (vigtigt):
-- Opdel HELE samtalen i replikker, hver linje starter med enten "Sælger:" eller "Kunde:" (skriv ord bogstavet i æ/ø).
-- ${starterText}
-- Skift afsender hver gang taleren skifter — vurder ud fra indhold, tone og kontekst.
-- Bevar det originale indhold så præcist som muligt, men ret stavefejl og indsæt naturlig tegnsætning.
-- Brug linjeskift mellem replikker (\\n).
-- IKKE punkttegn ("- "), tidsstempler eller noget andet før "Sælger:"/"Kunde:".
+DIARIZED_TRANSCRIPTION:
+- Hvis transskriptionen nedenfor ALLEREDE har "Sælger:" / "Kunde:" labels, bevar dem præcist som de er — bare rens tegnsætning og åbenlyse fejlhørte ord.
+- Hvis ikke, opdel selv i "Sælger:" / "Kunde:" replikker. ${starterText}
+- Brug linjeskift mellem replikker.
 
 OUTPUT-FORMAT:
 - Returner KUN det rene JSON-objekt — ingen markdown-code-fences, ingen forklaring før/efter.

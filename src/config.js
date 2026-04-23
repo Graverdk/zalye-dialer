@@ -21,9 +21,9 @@ module.exports = {
     apiKey: required('ANTHROPIC_API_KEY'),
   },
 
-  openai: {
-    // Bruges til Whisper transskription (langt bedre dansk end lokal whisper-small)
-    apiKey: required('OPENAI_API_KEY'),
+  elevenlabs: {
+    // Bruges til tale-til-tekst (Scribe) med indbygget speaker diarization
+    apiKey: required('ELEVENLABS_API_KEY'),
   },
 
 

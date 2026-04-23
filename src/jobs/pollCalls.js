@@ -4,7 +4,7 @@ const config = require('../config');
 const { db, calls, messages, relatelNotes, insights, state } = require('../db/database');
 const relatel = require('../services/relatel');
 const pipedrive = require('../services/pipedrive');
-const { transcribe } = require('../services/transcription');
+const { transcribe, buildDiarizedTranscript } = require('../services/transcription');
 const claude = require('../services/claude');
 
 // In-memory cache: phone number -> { personId, latestDealId, ts }
@@ -104,25 +104,30 @@ async function processTranscriptions() {
     try {
       console.log('[AI] Downloader optagelse...');
       const { buffer, contentType } = await relatel.downloadRecording(call.recording_url);
-      const transcription = await transcribe(buffer, contentType);
+      const scribeResult = await transcribe(buffer, contentType);
+      const transcription = scribeResult.text;
+
+      // Byg diariseret transskription direkte fra Scribe's ord+speaker-data
+      // (langt mere pålidelig end at lade Claude gætte bagefter)
+      let diarizedTranscription = buildDiarizedTranscript(scribeResult.words, call.direction);
 
       let summary = transcription;
       let actionPoints = null;
       let topics = null;
-      let diarizedTranscription = null;
       let analysisResult = null;
 
       if (transcription) {
         console.log('[AI] Analyserer med Claude...');
         const analysis = await claude.analyzeCall({
-          transcription,
+          transcription: diarizedTranscription || transcription,
           direction: call.direction,
         });
         if (typeof analysis === 'object') {
           summary = analysis.summary || transcription;
           actionPoints = analysis.actionPoints || null;
           topics = analysis.topics || null;
-          diarizedTranscription = analysis.diarizedTranscription || null;
+          // Hvis Scribe ikke gav os diarization (fx kun én taler), brug Claude's
+          if (!diarizedTranscription) diarizedTranscription = analysis.diarizedTranscription || null;
           analysisResult = analysis;
         } else {
           summary = analysis || transcription;
