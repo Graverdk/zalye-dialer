@@ -1,71 +1,67 @@
 // ============================================================
-// Lokal Whisper-transskription via @xenova/transformers + ffmpeg
-// Lyden forlader ALDRIG serveren — 100% GDPR-safe.
-// ffmpeg konverterer lyden til 16kHz mono PCM (Node.js-kompatibelt)
-// Whisper-small model (~250MB) downloades første gang ved opstart.
+// Transskription via OpenAI Whisper API (whisper-1 / large-v3)
+// - Meget bedre til dansk end lokal whisper-small
+// - Ingen "da-da-da"-repetition eller fejl-oversættelse af egennavne
+// - Initial prompt hjælper modellen genkende Zalye-specifikke termer
 // ============================================================
 
-const { execFileSync } = require('child_process');
-const { writeFileSync, readFileSync, unlinkSync, existsSync } = require('fs');
-const { join } = require('path');
-const { tmpdir } = require('os');
-const ffmpegPath = require('ffmpeg-static'); // Pre-built binary — ingen system-ffmpeg nødvendig
+const fetch = require('node-fetch');
+const FormData = require('form-data');
+const config = require('../config');
 
-let _pipeline = null;
-
-async function getTranscriber() {
-  if (_pipeline) return _pipeline;
-  const { pipeline } = await import('@xenova/transformers');
-  console.log('[Whisper] Indlæser lokal Whisper-model (første gang tager ~30 sek)...');
-  _pipeline = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small', {
-    revision: 'main',
-    forced_decoder_ids: null,
-  });
-  console.log('[Whisper] Model klar.');
-  return _pipeline;
-}
-
-// Konvertér audio buffer til Float32Array via ffmpeg (16kHz, mono, f32le)
-function audioBufferToFloat32(audioBuffer) {
-  const id = Date.now() + Math.random().toString(36).slice(2);
-  const tmpIn  = join(tmpdir(), `whisper_in_${id}`);
-  const tmpOut = join(tmpdir(), `whisper_out_${id}.pcm`);
-
-  writeFileSync(tmpIn, audioBuffer);
-
-  try {
-    execFileSync(ffmpegPath, [
-      '-i', tmpIn,
-      '-ar', '16000', // 16 kHz samplingsrate
-      '-ac', '1',     // mono
-      '-f', 'f32le',  // 32-bit float little-endian (Whisper-format)
-      '-y', tmpOut,
-    ], { stdio: 'pipe' });
-
-    const pcm = readFileSync(tmpOut);
-    return new Float32Array(pcm.buffer, pcm.byteOffset, pcm.length / 4);
-  } finally {
-    if (existsSync(tmpIn))  unlinkSync(tmpIn);
-    if (existsSync(tmpOut)) unlinkSync(tmpOut);
-  }
-}
+// Dansk kontekst-prompt: forbedrer genkendelse af egennavne og fagtermer
+// Whisper bruger denne som "stylistisk reference" — ikke som direkte instruktion
+const DANISH_CONTEXT_PROMPT = (
+  'Dette er en salgssamtale på dansk mellem Jeppe Graversen fra Zalye ' +
+  'og en kunde. Zalye er en softwareplatform til håndværkerbranchen. ' +
+  'Almindelige emner: demo, booking, pris, abonnement, onboarding, ' +
+  'faktura, tilbud, kalender, opgaver, kunder, håndværkere. ' +
+  'Andre ord: Pipedrive, Relatel, Flextagservice, Malerfix, Gulvfix.'
+);
 
 async function transcribe(audioBuffer, contentType = 'audio/mpeg') {
-  const transcriber = await getTranscriber();
+  if (!config.openai || !config.openai.apiKey) {
+    throw new Error('OPENAI_API_KEY mangler — tilføj den i Railway Variables');
+  }
 
-  console.log('[Whisper] Konverterer lyd med ffmpeg...');
-  const audioData = audioBufferToFloat32(audioBuffer);
+  console.log('[Whisper] Sender ' + audioBuffer.length + ' bytes til OpenAI Whisper API...');
 
-  console.log('[Whisper] Transskriberer...');
-  const result = await transcriber(audioData, {
-    sampling_rate: 16000,
-    language: 'danish',
-    task: 'transcribe',
-    chunk_length_s: 30,
-    stride_length_s: 5,
+  // Bestem filendelse ud fra content-type (Whisper API kræver korrekt filendelse)
+  const ext = (() => {
+    if (contentType.includes('mpeg') || contentType.includes('mp3')) return 'mp3';
+    if (contentType.includes('wav')) return 'wav';
+    if (contentType.includes('mp4') || contentType.includes('m4a')) return 'm4a';
+    if (contentType.includes('ogg')) return 'ogg';
+    if (contentType.includes('webm')) return 'webm';
+    if (contentType.includes('flac')) return 'flac';
+    return 'mp3';
+  })();
+
+  const form = new FormData();
+  form.append('file', audioBuffer, { filename: 'call.' + ext, contentType });
+  form.append('model', 'whisper-1');
+  form.append('language', 'da');
+  form.append('response_format', 'text');
+  form.append('temperature', '0'); // Minimér hallucinering / repetition loops
+  form.append('prompt', DANISH_CONTEXT_PROMPT);
+
+  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + config.openai.apiKey,
+      ...form.getHeaders(),
+    },
+    body: form,
   });
 
-  return (result.text || '').trim();
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error('OpenAI Whisper fejl ' + res.status + ': ' + errText.substring(0, 300));
+  }
+
+  const text = (await res.text()).trim();
+  console.log('[Whisper] Transskription modtaget (' + text.length + ' tegn)');
+  return text;
 }
 
 module.exports = { transcribe };
