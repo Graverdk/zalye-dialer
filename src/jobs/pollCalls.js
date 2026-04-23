@@ -673,8 +673,6 @@ async function enrichContacts() {
 }
 
 function start() {
-  const INTERVAL = config.pollIntervalSeconds || 30;
-
   // Reset alle opkald der hænger i 'processing' (fx pga. tidligere crash/restart)
   // Ellers ville de aldrig blive plukket op igen af processTranscriptions
   try {
@@ -688,42 +686,48 @@ function start() {
     console.error('[Init] Kunne ikke resette processing-status:', e.message);
   }
 
-  // Opkald: hvert 30. sekund (konfigurerbart via POLL_INTERVAL_SECONDS)
-  cron.schedule('*/' + INTERVAL + ' * * * * *', async () => {
+  // ============================================================
+  // OPTIMERET polling-cadence — reducerer unødvendige API-kald
+  // når der sjældent er nye opkald. Bruger /api/webhook/relatel
+  // endpointet til øjeblikkelig processering hvis webhook konfigureres.
+  // ============================================================
+
+  // Opkald: hvert minut (før: 30s)
+  cron.schedule('0 * * * * *', async () => {
     try { await pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
   });
 
-  // SMS: hvert minut
-  cron.schedule('0 * * * * *', async () => {
+  // SMS: hvert 5. minut (før: 1 min)
+  cron.schedule('0 */5 * * * *', async () => {
     try { await fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
   });
 
-  // Retry manglende recordings: hvert minut (10s offset)
-  cron.schedule('10 * * * * *', async () => {
-    try { await retryMissingRecordings(); } catch (e) { console.error('[Retry] Fejl:', e.message); }
-  });
-
-  // Transskription: hvert minut
-  cron.schedule('30 * * * * *', async () => {
+  // Transskription: hvert 2. minut (før: 1 min)
+  cron.schedule('30 */2 * * * *', async () => {
     try { await processTranscriptions(); } catch (e) { console.error('[AI] Fejl:', e.message); }
   });
 
-  // Noter: hvert 5. minut
-  cron.schedule('0 */5 * * * *', async () => {
+  // Retry manglende recordings: hvert 3. minut (før: 1 min)
+  cron.schedule('20 */3 * * * *', async () => {
+    try { await retryMissingRecordings(); } catch (e) { console.error('[Retry] Fejl:', e.message); }
+  });
+
+  // Noter: hvert 15. minut (før: 5 min)
+  cron.schedule('0 */15 * * * *', async () => {
     try { await fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
   });
 
-  // Kontakt-berigelse: hvert 5. minut
-  cron.schedule('15 */5 * * * *', async () => {
+  // Kontakt-berigelse: hvert 30. minut (før: 5 min) — kører stille i baggrunden
+  cron.schedule('15 */30 * * * *', async () => {
     try { await enrichContacts(); } catch (e) { console.error('[Enrich] Fejl:', e.message); }
   });
 
-  // Auto-retry failed transskriptioner: hvert 5. minut (45 sek offset for at undgå overlap)
-  cron.schedule('45 */5 * * * *', async () => {
+  // Auto-retry failed transskriptioner: hvert 10. minut (før: 5 min)
+  cron.schedule('45 */10 * * * *', async () => {
     try { await autoRetryFailed(); } catch (e) { console.error('[AutoRetry] Fejl:', e.message); }
   });
 
-  console.log('[Poll] Cron-jobs startet (opkald: ' + INTERVAL + 's, SMS: 60s, transskription: 60s, noter: 5min, berigelse: 5min, auto-retry: 5min).');
+  console.log('[Poll] Cron-jobs startet — optimeret cadence (opkald: 60s, SMS: 5min, transskription: 2min, retry: 3min, noter: 15min, berigelse: 30min, auto-retry: 10min)');
 }
 
 module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions, enrichContacts, retryMissingRecordings, backfillCalls, autoRetryFailed };

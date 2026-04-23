@@ -38,6 +38,7 @@ app.use('/auth', require('./routes/auth'));
 // ============================================================
 app.use('/api/calls', require('./routes/calls'));
 app.use('/api/messages', require('./routes/messages'));
+app.use('/api/webhook', require('./routes/webhook'));
 
 // ============================================================
 // Health check
