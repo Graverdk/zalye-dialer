@@ -131,23 +131,63 @@ router.get('/debug/relatel', async (req, res) => {
 // ============================================================
 router.get('/debug/sms', async (req, res) => {
   const relatel = require('../services/relatel');
+  const fetch = require('node-fetch');
+  const config = require('../config');
   const hours = Math.min(Math.max(parseInt(req.query.hours) || 2, 1), 168);
   const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const noFilter = req.query.noFilter === '1';
+
+  const out = { hours, since, noFilter };
   try {
-    const chats = await relatel.getChats({ after: since, limit: 50 });
-    const detailed = [];
-    for (const chat of (chats || []).slice(0, 20)) {
-      const uuid = chat.uuid || chat.id;
-      try {
-        const full = await relatel.getChat(uuid);
-        detailed.push({ chat, full });
-      } catch (e) {
-        detailed.push({ chat, error: e.message });
+    // 1) /chats med tidsfilter (normal) eller uden
+    const chatsFiltered = await relatel.getChats(noFilter ? { limit: 50 } : { after: since, limit: 50 });
+    out.chatsFilteredCount = (chatsFiltered || []).length;
+
+    // 2) /chats UDEN tidsfilter for at se om der overhovedet findes chats
+    let chatsAll = null;
+    try {
+      const r = await fetch(`${config.relatel.baseUrl}/chats?limit=50`, {
+        headers: { Authorization: `Bearer ${config.relatel.accessToken}` },
+      });
+      chatsAll = await r.json();
+      out.chatsAllStatus = r.status;
+      out.chatsAllCount = (chatsAll?.chats || chatsAll || []).length;
+      out.chatsAllSample = (chatsAll?.chats || chatsAll || []).slice(0, 3);
+    } catch (e) {
+      out.chatsAllError = e.message;
+    }
+
+    // 3) /messages endpoint (officielt KUN til at sende, men måske virker GET?)
+    try {
+      const r = await fetch(`${config.relatel.baseUrl}/messages?limit=10`, {
+        headers: { Authorization: `Bearer ${config.relatel.accessToken}` },
+      });
+      const data = await r.json();
+      out.messagesStatus = r.status;
+      out.messagesCount = (data?.messages || data || []).length;
+      out.messagesSample = JSON.stringify(data).substring(0, 500);
+    } catch (e) {
+      out.messagesError = e.message;
+    }
+
+    // 4) Hvis der er chats, dump første 5 detaljer
+    if ((chatsFiltered || []).length > 0) {
+      out.chatDetails = [];
+      for (const chat of (chatsFiltered || []).slice(0, 5)) {
+        const uuid = chat.uuid || chat.id;
+        try {
+          const full = await relatel.getChat(uuid);
+          out.chatDetails.push({ chat, full });
+        } catch (e) {
+          out.chatDetails.push({ chat, error: e.message });
+        }
       }
     }
-    res.json({ hours, chatsCount: (chats || []).length, chats: detailed });
+
+    res.json(out);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    out.error = err.message;
+    res.status(500).json(out);
   }
 });
 
