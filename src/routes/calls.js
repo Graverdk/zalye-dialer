@@ -190,6 +190,42 @@ router.get('/debug/db-status', (req, res) => {
   }
 });
 
+// POST /api/calls/unpin-notes — un-pin alle Zalye-oprettede noter
+// (eksisterende noter står som pinned; dette gør at de fremover vises
+// under Notes-fanen i Pipedrive i stedet for i Focus-sektionen)
+router.post('/unpin-notes', async (req, res) => {
+  const fetch = require('node-fetch');
+  const config = require('../config');
+  const { db } = require('../db/database');
+  try {
+    const notes = db.prepare(`
+      SELECT DISTINCT pipedrive_note_id, pipedrive_deal_id
+      FROM calls
+      WHERE pipedrive_note_id IS NOT NULL AND pipedrive_deal_id IS NOT NULL
+    `).all();
+
+    let unpinned = 0;
+    let failed = 0;
+    for (const n of notes) {
+      try {
+        const url = `${config.pipedrive.baseUrl}/notes/${n.pipedrive_note_id}?api_token=${config.pipedrive.apiToken}`;
+        const r = await fetch(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pinned_to_deal_flag: false }),
+        });
+        if (r.ok) unpinned++;
+        else failed++;
+      } catch (e) {
+        failed++;
+      }
+    }
+    res.json({ success: true, unpinned, failed, totalChecked: notes.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/calls/debug/pipedrive-note/:id — tjek om en Pipedrive-note eksisterer
 router.get('/debug/pipedrive-note/:id', async (req, res) => {
   const fetch = require('node-fetch');

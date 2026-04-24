@@ -103,7 +103,8 @@ function buildCallNoteContent({
 
 async function createCallNote({ dealId, personId, callData }) {
   const content = buildCallNoteContent(callData);
-  const body = { content, pinned_to_deal_flag: !!dealId };
+  // Almindelig note (ikke pinned) → vises under Notes-fanen og opdaterer Notes(X)-tælleren
+  const body = { content };
   if (dealId) body.deal_id = dealId;
   if (personId) body.person_id = personId;
 
