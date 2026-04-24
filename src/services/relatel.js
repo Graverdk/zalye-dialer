@@ -162,15 +162,23 @@ async function getChat(uuid) {
 
 // ============================================================
 // Normaliser SMS til internt format
+// Relatel /messages-payload har from_contact og to_contact-objekter
 // ============================================================
 function normalizeMessage(msg) {
+  const fromNum = msg.from_contact?.number || msg.from_number || '';
+  const toNum = msg.to_contact?.number || msg.to_number || '';
+  const OUR_HOVEDNUMMER = '4571747007';
+  // Retning: hvis "fra" = vores hovednummer → udgående, ellers indgående
+  const direction = msg.direction || (fromNum === OUR_HOVEDNUMMER ? 'outgoing' : 'incoming');
+  // Remote = den anden part (ikke os)
+  const remoteNum = direction === 'outgoing' ? toNum : fromNum;
   return {
-    relatel_id: msg.id || msg.uuid || null,
-    direction: msg.direction || (msg.from_number ? 'incoming' : 'outgoing'),
-    phone_number: (msg.remote_number || msg.to_number || msg.from_number || '').replace(/^(\+|00)/, ''),
+    relatel_id: (msg.id || msg.uuid || '').toString() || null,
+    direction,
+    phone_number: (remoteNum || '').replace(/^(\+|00)/, ''),
     body: msg.body || msg.text || msg.content || '',
     sent_at: msg.created_at || msg.sent_at || null,
-    employee_number: msg.employee_number || null,
+    employee_number: direction === 'outgoing' ? fromNum : toNum,
   };
 }
 

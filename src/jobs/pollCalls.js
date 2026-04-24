@@ -435,37 +435,23 @@ async function fetchNewMessages() {
   const lastChecked = state.get('last_sms_check') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const newMessages = [];
   try {
-    // Relatel: /messages er KUN til at SENDE. For at LISTE SMS bruges /chats + /chats/{uuid}
-    const chats = await relatel.getChats({ after: lastChecked, limit: 100 });
-    console.log('[SMS] /chats returnerede ' + (chats || []).length + ' chats (opdateret efter ' + lastChecked + ')');
+    // /messages virker faktisk til at LISTE SMS (selvom dokumentationen siger den kun er til send)
+    // Debug viste 7 beskeder fra /messages mens /chats returnerede 0
+    const rawMessages = await relatel.getMessages({ after: lastChecked, limit: 200 });
+    console.log('[SMS] /messages returnerede ' + (rawMessages || []).length + ' beskeder (created_at efter ' + lastChecked + ')');
 
-    for (const chat of (chats || [])) {
-      const chatUuid = chat.uuid || chat.id;
-      if (!chatUuid) continue;
-      let full;
-      try {
-        full = await relatel.getChat(chatUuid);
-      } catch (e) {
-        console.error('[SMS] Kunne ikke hente chat ' + chatUuid + ':', e.message);
-        continue;
-      }
-      const chatMessages = (full && (full.messages || full.sms || [])) || [];
-      for (const m of chatMessages) {
-        const msgId = (m.id || m.uuid) ? String(m.id || m.uuid) : null;
-        if (!msgId) continue;
-        const existing = messages.getById(msgId);
-        if (existing) continue;
-        // Kopier chat-niveau felter ned i beskeden hvis de mangler
-        if (!m.remote_number && chat.remote_number) m.remote_number = chat.remote_number;
-        if (!m.employee_number && chat.employee_number) m.employee_number = chat.employee_number;
-        newMessages.push(m);
-      }
+    for (const m of (rawMessages || [])) {
+      const msgId = (m.id || m.uuid) ? String(m.id || m.uuid) : null;
+      if (!msgId) continue;
+      const existing = messages.getById(msgId);
+      if (existing) continue;
+      newMessages.push(m);
     }
     if (newMessages.length > 0) {
       console.log('[SMS] ' + newMessages.length + ' nye beskeder fundet');
     }
   } catch (e) {
-    console.error('[SMS] /chats fejl:', e.message);
+    console.error('[SMS] /messages fejl:', e.message);
   }
   state.set('last_sms_check', new Date().toISOString());
 
