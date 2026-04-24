@@ -170,6 +170,9 @@ router.get('/debug/db-status', (req, res) => {
         LENGTH(transcription) AS transcription_length,
         transcription_attempts,
         transcription_error,
+        pipedrive_person_id,
+        pipedrive_deal_id,
+        pipedrive_note_id,
         pipedrive_person_id IS NOT NULL AS linked,
         pipedrive_note_id IS NOT NULL AS has_note
       FROM calls
