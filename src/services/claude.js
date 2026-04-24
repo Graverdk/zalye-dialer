@@ -23,9 +23,9 @@ async function analyzeCall({ transcription, contactName = 'kunden', direction = 
   const prompt = `Du er salgs-intelligence assistent for Zalye, en dansk softwarevirksomhed der bygger en platform til håndværkerbranchen.
 
 Du har modtaget en transskription af et ${directionText} ${contactName}. ${starterText}
-Transskriptionen kan allerede være opdelt i "Sælger:" og "Kunde:" linjer fra automatisk speaker-diarization — brug den opdeling hvis den er der.
+Transskriptionen kan allerede være opdelt i "Sælger:" og "Kunde:" linjer.
 
-Returner ét rent JSON-objekt med præcis disse felter:
+Returner ét rent JSON-objekt med præcis disse felter (VIGTIGT: inkluder IKKE diarized_transcription — vi har det allerede):
 
 {
   "summary": "2-4 sætninger der opsummerer hvad samtalen handlede om. Skriv i datid på korrekt dansk.",
@@ -34,37 +34,28 @@ Returner ét rent JSON-objekt med præcis disse felter:
   "call_type": "demo | onboarding | support | sales | follow_up | unknown",
   "sentiment": "positive | neutral | negative",
   "call_outcome": "interested | not_interested | meeting_booked | deal_closed | needs_follow_up | no_answer",
-  "pain_points": ["Kundens problemer/frustrationer der kom frem i samtalen"],
-  "objections": ["Indvendinger kunden havde mod køb/tilmelding"],
-  "buying_signals": ["Positive signaler der tyder på interesse"],
-  "competitor_mentions": ["Andre systemer/løsninger kunden nævnte"],
-  "next_steps": ["Konkrete næste skridt aftalt i samtalen"],
+  "pain_points": ["Kundens problemer/frustrationer"],
+  "objections": ["Indvendinger kunden havde"],
+  "buying_signals": ["Positive signaler"],
+  "competitor_mentions": ["Andre systemer/løsninger"],
+  "next_steps": ["Konkrete næste skridt"],
   "customer_stage": "lead | qualified | demo_done | proposal_sent | negotiation | closed_won | closed_lost",
   "engagement_score": 7,
   "conversion_likelihood": 6,
-  "ai_coaching_note": "1-2 sætninger med konkret feedback til sælgeren. Hvad gik godt? Hvad kunne forbedres?",
-  "diarized_transcription": "Sælger: Hej, det er Jeppe fra Zalye...\\nKunde: Ja hej, hvad drejer det sig om?\\nSælger: ..."
+  "ai_coaching_note": "1-2 sætninger med konkret feedback til sælgeren"
 }
 
 Regler:
 - Skriv ALTID på korrekt dansk med æ, ø, å (aldrig "ae", "oe", "aa")
-- Ret åbenlyse stavefejl og fejlhørte ord baseret på kontekst (fx "Sally" → "Zalye", "Jeppe" hvis konteksten er klar)
-- action_points: Konkrete og actionable — ikke vage. Inkluder hvem og hvornår når det fremgår.
-- pain_points: Kun ting kunden faktisk sagde eller antydede. Gæt ikke.
-- objections: Kun reelle indvendinger.
-- buying_signals: Ting som "hvad koster det?", "kan I starte i næste uge?", "send mig et tilbud".
-- engagement_score (1-10): Baseret på hvor aktiv og interesseret kunden lød.
-- conversion_likelihood (1-10): Baseret på helheden af samtalen.
-- ai_coaching_note: Vær specifik og konstruktiv.
-
-DIARIZED_TRANSCRIPTION:
-- Hvis transskriptionen nedenfor ALLEREDE har "Sælger:" / "Kunde:" labels, bevar dem præcist som de er — bare rens tegnsætning og åbenlyse fejlhørte ord.
-- Hvis ikke, opdel selv i "Sælger:" / "Kunde:" replikker. ${starterText}
-- Brug linjeskift mellem replikker.
+- Ret mentale fejlhørte ord baseret på kontekst (fx "Sally" → "Zalye")
+- action_points: Konkrete og actionable — ikke vage
+- pain_points/objections/buying_signals: Kun ting der faktisk fremgik af samtalen
+- engagement_score / conversion_likelihood: 1-10
 
 OUTPUT-FORMAT:
-- Returner KUN det rene JSON-objekt — ingen markdown-code-fences, ingen forklaring før/efter.
+- Returner KUN det rene JSON-objekt — ingen markdown, ingen forklaring før/efter.
 - Hvis et felt ikke er relevant, brug tom array [] eller null.
+- GENTAG IKKE samtalen i outputtet — vi har allerede den diariserede tekst.
 
 TRANSSKRIPTION:
 ${transcription}`;
