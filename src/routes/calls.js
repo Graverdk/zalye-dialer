@@ -190,6 +190,29 @@ router.get('/debug/db-status', (req, res) => {
   }
 });
 
+// GET /api/calls/debug/pipedrive-note/:id — tjek om en Pipedrive-note eksisterer
+router.get('/debug/pipedrive-note/:id', async (req, res) => {
+  const fetch = require('node-fetch');
+  const config = require('../config');
+  const url = `${config.pipedrive.baseUrl}/notes/${req.params.id}?api_token=${config.pipedrive.apiToken}`;
+  try {
+    const r = await fetch(url);
+    const data = await r.json();
+    res.json({
+      httpStatus: r.status,
+      exists: r.ok,
+      noteId: data?.data?.id,
+      dealId: data?.data?.deal_id,
+      personId: data?.data?.person_id,
+      addTime: data?.data?.add_time,
+      contentPreview: (data?.data?.content || '').substring(0, 300),
+      rawError: r.ok ? null : data,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/calls/reset-attempts — nulstil attempt-tæller så failed kan prøves igen
 router.post('/reset-attempts', (req, res) => {
   const { db } = require('../db/database');
