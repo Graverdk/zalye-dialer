@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const { messages, relatelNotes } = require('../db/database');
+const { requirePanelAuth, requireAdmin } = require('../middleware/auth');
 
 // ============================================================
 // GET /api/messages
 // Hent SMS-beskeder for panel
 // Query: ?personId=123 | ?dealId=456 | ?phone=4571...
 // ============================================================
-router.get('/', (req, res) => {
+router.get('/', requirePanelAuth, (req, res) => {
   const { personId, dealId, phone, limit = 50 } = req.query;
 
   let result = [];
@@ -30,7 +31,7 @@ router.get('/', (req, res) => {
 // Hent Relatel-noter for panel
 // Query: ?personId=123 | ?phone=4571...
 // ============================================================
-router.get('/notes', (req, res) => {
+router.get('/notes', requirePanelAuth, (req, res) => {
   const { personId, phone, limit = 50 } = req.query;
 
   let result = [];
@@ -50,7 +51,7 @@ router.get('/notes', (req, res) => {
 // POST /api/messages/poll
 // Manuel trigger af SMS-polling (til test)
 // ============================================================
-router.post('/poll', async (req, res) => {
+router.post('/poll', requireAdmin, async (req, res) => {
   const { fetchNewMessages } = require('../jobs/pollCalls');
   try {
     await fetchNewMessages();

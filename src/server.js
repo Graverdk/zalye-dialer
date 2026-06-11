@@ -5,9 +5,10 @@ const config = require('./config');
 
 const app = express();
 
-// Request logging
+// Request logging (redactér tokens/secrets så de ikke ender i Railway-logs)
 app.use((req, res, next) => {
-  console.log(`[HTTP] ${req.method} ${req.url} from ${req.headers.referer || "direct"}`);
+  const safeUrl = req.url.replace(/((?:^|[?&])(?:token|secret|admin_secret)=)[^&]+/gi, '$1***');
+  console.log(`[HTTP] ${req.method} ${safeUrl} from ${req.headers.referer || "direct"}`);
   next();
 });
 
@@ -15,8 +16,9 @@ app.use((req, res, next) => {
 // Middleware
 // ============================================================
 app.use(cors({
-  // Tillad Pipedrive at loade vores iframe
-  origin: ['https://*.pipedrive.com', 'http://localhost:*'],
+  // Tillad Pipedrive at kalde os fra iframe-kontekst.
+  // OBS: cors-pakken understøtter ikke wildcard-STRENGE — brug regex.
+  origin: [/\.pipedrive\.com$/, /^https?:\/\/localhost(:\d+)?$/],
   credentials: true,
 }));
 app.use(express.json());
@@ -76,10 +78,12 @@ app.get('/manifest.json', (req, res) => {
 
 // ============================================================
 // Error handler
+// (returnér ALDRIG err.message til kalderen — fejl fra fetch kan
+// indeholde fulde URL'er og dermed hemmeligheder; detaljer går i loggen)
 // ============================================================
 app.use((err, req, res, _next) => {
   console.error('Uhandteret fejl:', err);
-  res.status(500).json({ error: 'Intern serverfejl', message: err.message });
+  res.status(500).json({ error: 'Intern serverfejl' });
 });
 
 // ============================================================

@@ -19,6 +19,27 @@ const NEGATIVE_TTL = 60 * 1000;
 // Undgaar at scanne samme kontakter hvert 5. minut
 const enrichedContactIds = new Set();
 
+// ============================================================
+// In-flight-lås: samme job må aldrig køre to gange samtidig.
+// Cron + webhook + manuelle triggers kan ellers overlappe og
+// give fx duplikerede Pipedrive-noter (begge ser "ingen note endnu").
+// ============================================================
+function withLock(name, fn) {
+  let running = false;
+  return async (...args) => {
+    if (running) {
+      console.log('[Lock] ' + name + ' kører allerede — springer over');
+      return { skipped: true, reason: name + ' kører allerede' };
+    }
+    running = true;
+    try {
+      return await fn(...args);
+    } finally {
+      running = false;
+    }
+  };
+}
+
 async function lookupPerson(phoneNumber) {
   const cached = personCache.get(phoneNumber);
   if (cached) {
@@ -40,10 +61,13 @@ async function pollNewCalls() {
   // Default ved første kørsel: 24 timer tilbage (sikkerhedsnet hvis DB-volumet
   // mistes ved Railway-redeploy — så taber vi ikke alle opkald siden sidste deploy)
   const lastChecked = state.get('last_call_check') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  // Tag tidsstemplet FØR vi spørger Relatel — ellers kan opkald, der slutter
+  // mellem query og "nu", falde i et hul og aldrig blive hentet
+  const checkTime = new Date().toISOString();
   console.log('[Poll] Henter opkald afsluttet efter: ' + lastChecked);
   const rawCalls = await relatel.getCalls({ endedAfter: lastChecked });
   console.log('[Poll] Fandt ' + rawCalls.length + ' afsluttede opkald');
-  state.set('last_call_check', new Date().toISOString());
+  state.set('last_call_check', checkTime);
 
   for (const rc of rawCalls) {
     const nc = relatel.normalizeCall(rc);
@@ -68,14 +92,49 @@ async function pollNewCalls() {
 
     calls.upsert(nc);
 
-    const lookup = await lookupPerson(nc.phone_number);
-    if (!lookup || !lookup.personId) continue;
+    // Match evt. midlertidig 'pending-…'-række fra click-to-call:
+    // overfør person/deal-koblingen (vi VED hvilken side der blev ringet fra
+    // — bedre end gæt via "seneste åbne deal") og slet temp-rækken
+    if (nc.direction === 'outgoing') {
+      const temp = db.prepare(`
+        SELECT * FROM calls
+        WHERE relatel_uuid LIKE 'pending-%'
+          AND substr(phone_number, -8) = substr(?, -8)
+          AND created_at > strftime('%s', 'now') - 3600
+        ORDER BY created_at DESC LIMIT 1
+      `).get(nc.phone_number);
+      if (temp) {
+        if (temp.pipedrive_person_id || temp.pipedrive_deal_id) {
+          db.prepare(`
+            UPDATE calls SET
+              pipedrive_person_id = COALESCE(pipedrive_person_id, ?),
+              pipedrive_deal_id   = COALESCE(pipedrive_deal_id, ?)
+            WHERE relatel_uuid = ?
+          `).run(temp.pipedrive_person_id, temp.pipedrive_deal_id, nc.relatel_uuid);
+          console.log('[Poll] Click-to-call-kobling overført til ' + nc.relatel_uuid);
+        }
+        db.prepare("DELETE FROM calls WHERE relatel_uuid = ?").run(temp.relatel_uuid);
+      }
+    }
+
     const existing = calls.getByUuid(nc.relatel_uuid);
     if (existing && existing.pipedrive_note_id) continue;
 
+    // Brug eksisterende kobling (fx fra click-to-call) før telefon-opslag
+    let personId = (existing && existing.pipedrive_person_id) || null;
+    let dealId = (existing && existing.pipedrive_deal_id) || null;
+    if (!personId) {
+      const lookup = await lookupPerson(nc.phone_number);
+      if (lookup && lookup.personId) {
+        personId = lookup.personId;
+        dealId = dealId || lookup.latestDealId;
+      }
+    }
+    if (!personId) continue;
+
     const noteId = await pipedrive.createCallNote({
-      personId: lookup.personId,
-      dealId: lookup.latestDealId,
+      personId,
+      dealId,
       callData: {
         direction: nc.direction,
         phoneNumber: nc.phone_number,
@@ -85,13 +144,63 @@ async function pollNewCalls() {
     });
     if (noteId) {
       db.prepare('UPDATE calls SET pipedrive_note_id = ?, pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
-        .run(noteId, lookup.personId, lookup.latestDealId, nc.relatel_uuid);
+        .run(noteId, personId, dealId, nc.relatel_uuid);
       console.log('[Poll] Opkaldsnote oprettet (note ' + noteId + ') for ' + nc.phone_number);
     }
   }
 }
 
+// ============================================================
+// GDPR + omkostninger: transskribér KUN opkald med Pipedrive-match.
+// Umatchede opkald (privatopkald, forkerte numre, leverandører...)
+// venter i UNMATCHED_WAIT_DAYS på et match (fx nyt lead der oprettes)
+// og markeres derefter 'skipped' — de transskriberes aldrig.
+// ============================================================
+const UNMATCHED_WAIT_DAYS = 7;
+
+async function matchUnmatchedPendingCalls() {
+  const unmatched = db.prepare(`
+    SELECT relatel_uuid, phone_number FROM calls
+    WHERE transcription_status = 'pending'
+      AND pipedrive_person_id IS NULL
+      AND recording_url IS NOT NULL
+      AND ended_at IS NOT NULL
+    ORDER BY ended_at DESC
+    LIMIT 10
+  `).all();
+
+  for (const c of unmatched) {
+    if (!c.phone_number) continue;
+    const lookup = await lookupPerson(c.phone_number);
+    if (lookup && lookup.personId) {
+      db.prepare(`
+        UPDATE calls SET
+          pipedrive_person_id = ?,
+          pipedrive_deal_id   = COALESCE(pipedrive_deal_id, ?)
+        WHERE relatel_uuid = ?
+      `).run(lookup.personId, lookup.latestDealId, c.relatel_uuid);
+      console.log('[Match] Sent match: ' + c.phone_number + ' -> person ' + lookup.personId + ' — transskriberes nu');
+    }
+  }
+}
+
+function expireUnmatchedCalls() {
+  const result = db.prepare(`
+    UPDATE calls SET transcription_status = 'skipped'
+    WHERE transcription_status = 'pending'
+      AND pipedrive_person_id IS NULL
+      AND ended_at IS NOT NULL
+      AND datetime(ended_at) < datetime('now', '-' || ? || ' days')
+  `).run(UNMATCHED_WAIT_DAYS);
+  if (result.changes > 0) {
+    console.log('[Match] ' + result.changes + ' umatchede opkald udløbet (>' + UNMATCHED_WAIT_DAYS + ' dage) — transskriberes ikke');
+  }
+}
+
 async function processTranscriptions() {
+  expireUnmatchedCalls();
+  await matchUnmatchedPendingCalls();
+
   const pending = calls.getPendingTranscriptions();
   if (pending.length === 0) return;
   console.log('[AI] Behandler ' + pending.length + ' opkald...');
@@ -260,7 +369,8 @@ async function autoRetryFailed() {
   if (result.changes > 0) {
     console.log('[AutoRetry] Sat ' + result.changes + ' failed opkald tilbage til pending');
     // Kick-start processering med det samme (i stedet for at vente på næste cron-tick)
-    processTranscriptions().catch(e => console.error('[AutoRetry] Fejl:', e.message));
+    // — via den låste version, så vi aldrig kører dobbelt
+    jobs.processTranscriptions().catch(e => console.error('[AutoRetry] Fejl:', e.message));
   }
 }
 
@@ -433,6 +543,7 @@ async function retryMissingRecordings() {
 // ============================================================
 async function fetchNewMessages() {
   const lastChecked = state.get('last_sms_check') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const checkTime = new Date().toISOString(); // tidsstempel FØR fetch — undgår huller
   const newMessages = [];
   try {
     // /messages virker faktisk til at LISTE SMS (selvom dokumentationen siger den kun er til send)
@@ -450,10 +561,12 @@ async function fetchNewMessages() {
     if (newMessages.length > 0) {
       console.log('[SMS] ' + newMessages.length + ' nye beskeder fundet');
     }
+    // Ryk kun checkpointet frem når Relatel-kaldet lykkedes —
+    // ellers mister vi beskeder i vinduet ved API-nedbrud
+    state.set('last_sms_check', checkTime);
   } catch (e) {
     console.error('[SMS] /messages fejl:', e.message);
   }
-  state.set('last_sms_check', new Date().toISOString());
 
   for (const msg of newMessages) {
     const nm = relatel.normalizeMessage(msg);
@@ -509,6 +622,7 @@ async function fetchNewMessages() {
 // ============================================================
 async function fetchNewNotes() {
   const lastChecked = state.get('last_notes_check') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const checkTime = new Date().toISOString(); // tidsstempel FØR fetch — undgår huller
   try {
     const contacts = await relatel.getContacts();
     let totalFresh = 0;
@@ -572,10 +686,10 @@ async function fetchNewNotes() {
     if (totalFresh > 0) {
       console.log('[Noter] Behandlede ' + totalFresh + ' nye noter');
     }
+    state.set('last_notes_check', checkTime); // kun frem ved succes
   } catch (e) {
     console.error('[Noter] Fejl:', e.message);
   }
-  state.set('last_notes_check', new Date().toISOString());
 }
 
 // ============================================================
@@ -658,6 +772,64 @@ async function enrichContacts() {
   }
 }
 
+// ============================================================
+// Låste versioner af alle jobs — brug ALTID disse udadtil
+// (cron, webhook, routes), så intet job kører dobbelt.
+// ============================================================
+const jobs = {
+  pollNewCalls:           withLock('Poll', pollNewCalls),
+  fetchNewMessages:       withLock('SMS', fetchNewMessages),
+  fetchNewNotes:          withLock('Noter', fetchNewNotes),
+  processTranscriptions:  withLock('AI', processTranscriptions),
+  enrichContacts:         withLock('Enrich', enrichContacts),
+  retryMissingRecordings: withLock('Retry', retryMissingRecordings),
+  backfillCalls:          withLock('Backfill', backfillCalls),
+  autoRetryFailed:        withLock('AutoRetry', autoRetryFailed),
+};
+
+// ============================================================
+// Oprydning: slet 'pending-…'-temp-rækker fra click-to-call
+// der aldrig blev matchet til et rigtigt opkald (fx optaget/ej besvaret)
+// ============================================================
+function cleanupPendingRows() {
+  try {
+    const result = db.prepare(`
+      DELETE FROM calls
+      WHERE relatel_uuid LIKE 'pending-%'
+        AND created_at < strftime('%s', 'now') - 86400
+    `).run();
+    if (result.changes > 0) {
+      console.log('[Cleanup] Slettede ' + result.changes + ' forældede pending-rækker');
+    }
+  } catch (e) {
+    console.error('[Cleanup] Fejl:', e.message);
+  }
+}
+
+// ============================================================
+// GDPR-retention: slet rå samtaletekst fra lokal DB efter 12 mdr.
+// Resumé, handlingspunkter og salgsindsigter beholdes — og
+// Pipedrive-noten (med den fulde tekst) røres ikke.
+// OBS: holdes i sync med dato-guarden i routes/calls.js (retry-transcription)
+// ============================================================
+const TRANSCRIPT_RETENTION_MONTHS = 12;
+
+function cleanupOldTranscriptions() {
+  try {
+    const result = db.prepare(`
+      UPDATE calls SET transcription = NULL
+      WHERE transcription IS NOT NULL
+        AND ended_at IS NOT NULL
+        AND datetime(ended_at) < datetime('now', '-' || ? || ' months')
+    `).run(TRANSCRIPT_RETENTION_MONTHS);
+    if (result.changes > 0) {
+      console.log('[Retention] Fjernede rå transskription fra ' + result.changes + ' opkald (>' + TRANSCRIPT_RETENTION_MONTHS + ' mdr.)');
+    }
+  } catch (e) {
+    console.error('[Retention] Fejl:', e.message);
+  }
+}
+
 function start() {
   // Reset alle opkald der hænger i 'processing' (fx pga. tidligere crash/restart)
   // Ellers ville de aldrig blive plukket op igen af processTranscriptions
@@ -672,6 +844,14 @@ function start() {
     console.error('[Init] Kunne ikke resette processing-status:', e.message);
   }
 
+  // Ryd op i gamle temp-rækker ved boot og derefter dagligt kl. 03:30
+  cleanupPendingRows();
+  cron.schedule('0 30 3 * * *', cleanupPendingRows);
+
+  // GDPR-retention: ryd gamle rå transskriptioner ved boot + dagligt kl. 03:45
+  cleanupOldTranscriptions();
+  cron.schedule('0 45 3 * * *', cleanupOldTranscriptions);
+
   // ============================================================
   // OPTIMERET polling-cadence — reducerer unødvendige API-kald
   // når der sjældent er nye opkald. Bruger /api/webhook/relatel
@@ -680,40 +860,51 @@ function start() {
 
   // Opkald: hvert minut (før: 30s)
   cron.schedule('0 * * * * *', async () => {
-    try { await pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
+    try { await jobs.pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
   });
 
   // SMS: hvert 5. minut (før: 1 min)
   cron.schedule('0 */5 * * * *', async () => {
-    try { await fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
+    try { await jobs.fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
   });
 
   // Transskription: hvert 2. minut (før: 1 min)
   cron.schedule('30 */2 * * * *', async () => {
-    try { await processTranscriptions(); } catch (e) { console.error('[AI] Fejl:', e.message); }
+    try { await jobs.processTranscriptions(); } catch (e) { console.error('[AI] Fejl:', e.message); }
   });
 
   // Retry manglende recordings: hvert 3. minut (før: 1 min)
   cron.schedule('20 */3 * * * *', async () => {
-    try { await retryMissingRecordings(); } catch (e) { console.error('[Retry] Fejl:', e.message); }
+    try { await jobs.retryMissingRecordings(); } catch (e) { console.error('[Retry] Fejl:', e.message); }
   });
 
   // Noter: hvert 15. minut (før: 5 min)
   cron.schedule('0 */15 * * * *', async () => {
-    try { await fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
+    try { await jobs.fetchNewNotes(); } catch (e) { console.error('[Noter] Fejl:', e.message); }
   });
 
   // Kontakt-berigelse: hvert 30. minut (før: 5 min) — kører stille i baggrunden
   cron.schedule('15 */30 * * * *', async () => {
-    try { await enrichContacts(); } catch (e) { console.error('[Enrich] Fejl:', e.message); }
+    try { await jobs.enrichContacts(); } catch (e) { console.error('[Enrich] Fejl:', e.message); }
   });
 
   // Auto-retry failed transskriptioner: hvert 10. minut (før: 5 min)
   cron.schedule('45 */10 * * * *', async () => {
-    try { await autoRetryFailed(); } catch (e) { console.error('[AutoRetry] Fejl:', e.message); }
+    try { await jobs.autoRetryFailed(); } catch (e) { console.error('[AutoRetry] Fejl:', e.message); }
   });
 
   console.log('[Poll] Cron-jobs startet — optimeret cadence (opkald: 60s, SMS: 5min, transskription: 2min, retry: 3min, noter: 15min, berigelse: 30min, auto-retry: 10min)');
 }
 
-module.exports = { start, pollNewCalls, fetchNewMessages, fetchNewNotes, processTranscriptions, enrichContacts, retryMissingRecordings, backfillCalls, autoRetryFailed };
+// Eksportér de LÅSTE versioner — webhook/routes må ikke kunne starte dobbeltkørsler
+module.exports = {
+  start,
+  pollNewCalls: jobs.pollNewCalls,
+  fetchNewMessages: jobs.fetchNewMessages,
+  fetchNewNotes: jobs.fetchNewNotes,
+  processTranscriptions: jobs.processTranscriptions,
+  enrichContacts: jobs.enrichContacts,
+  retryMissingRecordings: jobs.retryMissingRecordings,
+  backfillCalls: jobs.backfillCalls,
+  autoRetryFailed: jobs.autoRetryFailed,
+};

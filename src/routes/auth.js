@@ -2,6 +2,23 @@ const express = require('express');
 const router = express.Router();
 const config = require('../config');
 const fetch = require('node-fetch');
+const { verifyToken, signSessionToken, SESSION_TTL_HOURS } = require('../middleware/auth');
+
+// ============================================================
+// POST /auth/session
+// Panelet bytter sit (kortlivede) Pipedrive-JWT til et session-token,
+// så panelet kan stå åbent længere end Pipedrive-tokenets levetid.
+// ============================================================
+router.post('/session', (req, res) => {
+  const token = req.body && req.body.token;
+  if (!token) return res.status(400).json({ error: 'token mangler' });
+  try {
+    verifyToken(token);
+  } catch (e) {
+    return res.status(401).json({ error: 'Ugyldigt eller udløbet Pipedrive-token' });
+  }
+  res.json({ sessionToken: signSessionToken(), expiresInSeconds: SESSION_TTL_HOURS * 3600 });
+});
 
 // GET /auth/callback - Pipedrive OAuth callback
 router.get('/callback', async (req, res) => {

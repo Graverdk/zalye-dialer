@@ -282,11 +282,14 @@ const calls = {
   },
 
   getPendingTranscriptions() {
+    // KUN opkald med Pipedrive-match transskriberes (GDPR + omkostninger).
+    // Umatchede venter — se matchUnmatchedPendingCalls/expireUnmatchedCalls i pollCalls.js
     return db.prepare(`
       SELECT * FROM calls
       WHERE transcription_status = 'pending'
         AND recording_url IS NOT NULL
         AND ended_at IS NOT NULL
+        AND pipedrive_person_id IS NOT NULL
       ORDER BY ended_at ASC
       LIMIT 5
     `).all();

@@ -7,8 +7,15 @@
 
 const express = require('express');
 const router = express.Router();
+const config = require('../config');
 
 router.post('/relatel', async (req, res) => {
+  // Hvis WEBHOOK_SECRET er sat, kræv den som ?secret=... (sæt den i Relatels webhook-URL).
+  // Uden secret kan enhver trigge ekstra polling (harmløst, men unødvendigt).
+  if (config.security.webhookSecret && req.query.secret !== config.security.webhookSecret) {
+    return res.status(401).json({ error: 'Ugyldig webhook-secret' });
+  }
+
   // Svar hurtigt så Relatel ikke timeout'er — arbejd i baggrunden
   res.json({ received: true });
 

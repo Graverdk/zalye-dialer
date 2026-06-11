@@ -4,14 +4,18 @@ const config = require('../config');
 const BASE = config.pipedrive.baseUrl;
 const TOKEN = config.pipedrive.apiToken;
 
+// Token sendes som header — ALDRIG i URL'en (URL'er ender i logs og fejlbeskeder)
+const GET_HEADERS  = { 'x-api-token': TOKEN, 'Accept': 'application/json' };
+const JSON_HEADERS = { 'x-api-token': TOKEN, 'Content-Type': 'application/json' };
+
 async function findPersonByPhone(rawPhone) {
   if (!rawPhone) return null;
   const digits = rawPhone.replace(/\D/g, '');
   if (digits.length < 8) return null;
   const localNumber = digits.slice(-8);
-  const url = `${BASE}/persons/search?term=${encodeURIComponent(localNumber)}&fields=phone&api_token=${TOKEN}`;
+  const url = `${BASE}/persons/search?term=${encodeURIComponent(localNumber)}&fields=phone`;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: GET_HEADERS });
     const data = await res.json();
     if (!res.ok) {
       console.error(`[Pipedrive] Søge-fejl ${res.status} for ${localNumber}: ${JSON.stringify(data)}`);
@@ -31,15 +35,15 @@ async function findPersonByPhone(rawPhone) {
 }
 
 async function getPersonById(personId) {
-  const url = `${BASE}/persons/${personId}?api_token=${TOKEN}`;
-  const res = await fetch(url);
+  const url = `${BASE}/persons/${personId}`;
+  const res = await fetch(url, { headers: GET_HEADERS });
   const data = await res.json();
   return data?.data || null;
 }
 
 async function getPersonWithDeals(personId) {
-  const url = `${BASE}/persons/${personId}/deals?api_token=${TOKEN}&status=open&limit=1`;
-  const res = await fetch(url);
+  const url = `${BASE}/persons/${personId}/deals?status=open&limit=1`;
+  const res = await fetch(url, { headers: GET_HEADERS });
   const data = await res.json();
   const deals = data?.data || [];
   return { latestDealId: deals[0]?.id || null };
@@ -108,9 +112,9 @@ async function createCallNote({ dealId, personId, callData }) {
   if (dealId) body.deal_id = dealId;
   if (personId) body.person_id = personId;
 
-  const res = await fetch(`${BASE}/notes?api_token=${TOKEN}`, {
+  const res = await fetch(`${BASE}/notes`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
   const data = await res.json();
@@ -123,9 +127,9 @@ async function createCallNote({ dealId, personId, callData }) {
 
 async function updateNote(noteId, { callData }) {
   const content = buildCallNoteContent(callData);
-  const res = await fetch(`${BASE}/notes/${noteId}?api_token=${TOKEN}`, {
+  const res = await fetch(`${BASE}/notes/${noteId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify({ content }),
   });
   const data = await res.json();
@@ -149,9 +153,9 @@ async function createCallActivity({ dealId, personId, subject, durationSec, done
   if (dealId) body.deal_id = dealId;
   if (personId) body.person_id = personId;
 
-  const res = await fetch(`${BASE}/activities?api_token=${TOKEN}`, {
+  const res = await fetch(`${BASE}/activities`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
   const data = await res.json();
@@ -174,9 +178,9 @@ async function createSmsNote({ personId, dealId, smsData }) {
   if (dealId) noteBody.deal_id = dealId;
   if (personId) noteBody.person_id = personId;
 
-  const res = await fetch(`${BASE}/notes?api_token=${TOKEN}`, {
+  const res = await fetch(`${BASE}/notes`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify(noteBody),
   });
   const data = await res.json();
@@ -203,9 +207,9 @@ async function createRelatelNote({ personId, dealId, noteData }) {
   if (dealId) body.deal_id = dealId;
   if (personId) body.person_id = personId;
 
-  const res = await fetch(`${BASE}/notes?api_token=${TOKEN}`, {
+  const res = await fetch(`${BASE}/notes`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
   const data = await res.json();
@@ -220,9 +224,9 @@ async function createPerson({ name, phone, orgName }) {
   const body = { name, phone: [{ value: phone, primary: true }] };
   if (orgName) body.org_name = orgName;
 
-  const res = await fetch(`${BASE}/persons?api_token=${TOKEN}`, {
+  const res = await fetch(`${BASE}/persons`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
   const data = await res.json();

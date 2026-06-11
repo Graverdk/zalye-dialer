@@ -2,29 +2,36 @@ const express = require('express');
 const router = express.Router();
 const relatel = require('../services/relatel');
 const { calls, state } = require('../db/database');
+const { requirePanelAuth, requireAdmin } = require('../middleware/auth');
 
 // ============================================================
 // POST /api/calls/initiate
 // Start et udgående opkald via Relatel
 // Body: { toNumber, personId?, dealId?, restrictTo? }
 // ============================================================
-router.post('/initiate', async (req, res) => {
+router.post('/initiate', requirePanelAuth, async (req, res) => {
   const { toNumber, personId, dealId, restrictTo = '' } = req.body;
 
   if (!toNumber) {
     return res.status(400).json({ error: 'toNumber er påkrævet' });
   }
 
+  // Kun rigtige telefonnumre — aldrig vilkårlige strenge videre til Relatel
+  const cleaned = String(toNumber).replace(/[\s\-().]/g, '');
+  if (!/^(\+|00)?\d{8,15}$/.test(cleaned)) {
+    return res.status(400).json({ error: 'Ugyldigt telefonnummer' });
+  }
+
   try {
-    const result = await relatel.initiateCall({ toNumber, restrictTo });
+    const result = await relatel.initiateCall({ toNumber: cleaned, restrictTo });
 
     // Gem et foreløbigt opkald i databasen så vi kan linke Pipedrive-IDs
     // Det rigtige opkald hentes ved næste poll fra Relatel
-    const tempUuid = `pending-${Date.now()}-${toNumber.replace(/\D/g, '')}`;
+    const tempUuid = `pending-${Date.now()}-${cleaned.replace(/\D/g, '')}`;
     calls.upsert({
       relatel_uuid:       tempUuid,
       direction:          'outgoing',
-      phone_number:       toNumber.replace(/^(\+|00)/, ''),
+      phone_number:       cleaned.replace(/^(\+|00)/, ''),
       employee_number:    null,
       started_at:         new Date().toISOString(),
       ended_at:           null,
@@ -46,7 +53,7 @@ router.post('/initiate', async (req, res) => {
 // Hent opkald til sidebar panel
 // Query: ?personId=123 | ?dealId=456 | ?phone=4571...
 // ============================================================
-router.get('/', (req, res) => {
+router.get('/', requirePanelAuth, (req, res) => {
   const { personId, dealId, phone, limit = 20 } = req.query;
 
   let result = [];
@@ -70,7 +77,7 @@ router.get('/', (req, res) => {
 // GET /api/calls/:uuid
 // Hent enkelt opkald med fuld detaljer
 // ============================================================
-router.get('/:uuid', (req, res) => {
+router.get('/:uuid', requirePanelAuth, (req, res) => {
   const call = calls.getByUuid(req.params.uuid);
   if (!call) return res.status(404).json({ error: 'Opkald ikke fundet' });
   res.json(formatCall(call));
@@ -80,7 +87,7 @@ router.get('/:uuid', (req, res) => {
 // POST /api/calls/poll
 // Manuel trigger af polling (til test)
 // ============================================================
-router.post('/poll', async (req, res) => {
+router.post('/poll', requireAdmin, async (req, res) => {
   const { pollNewCalls } = require('../jobs/pollCalls');
   try {
     await pollNewCalls();
@@ -95,7 +102,7 @@ router.post('/poll', async (req, res) => {
 // Dump rå Relatel data for de sidste N timer — til debug af
 // recording_url-feltet som ikke altid kommer igennem korrekt
 // ============================================================
-router.get('/debug/relatel', async (req, res) => {
+router.get('/debug/relatel', requireAdmin, async (req, res) => {
   const relatel = require('../services/relatel');
   const hours = Math.min(Math.max(parseInt(req.query.hours) || 24, 1), 168);
   const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
@@ -129,7 +136,7 @@ router.get('/debug/relatel', async (req, res) => {
 // GET /api/calls/debug/sms?hours=2
 // Dump seneste chats + beskeder fra Relatel
 // ============================================================
-router.get('/debug/sms', async (req, res) => {
+router.get('/debug/sms', requireAdmin, async (req, res) => {
   const relatel = require('../services/relatel');
   const fetch = require('node-fetch');
   const config = require('../config');
@@ -195,7 +202,7 @@ router.get('/debug/sms', async (req, res) => {
 // GET /api/calls/debug/db-status
 // Viser hvad der ligger i vores DB + deres transskriptions-status
 // ============================================================
-router.get('/debug/db-status', (req, res) => {
+router.get('/debug/db-status', requireAdmin, (req, res) => {
   const { db } = require('../db/database');
   try {
     const rows = db.prepare(`
@@ -233,7 +240,7 @@ router.get('/debug/db-status', (req, res) => {
 // POST /api/calls/unpin-notes — un-pin alle Zalye-oprettede noter
 // (eksisterende noter står som pinned; dette gør at de fremover vises
 // under Notes-fanen i Pipedrive i stedet for i Focus-sektionen)
-router.post('/unpin-notes', async (req, res) => {
+router.post('/unpin-notes', requireAdmin, async (req, res) => {
   const fetch = require('node-fetch');
   const config = require('../config');
   const { db } = require('../db/database');
@@ -248,10 +255,10 @@ router.post('/unpin-notes', async (req, res) => {
     let failed = 0;
     for (const n of notes) {
       try {
-        const url = `${config.pipedrive.baseUrl}/notes/${n.pipedrive_note_id}?api_token=${config.pipedrive.apiToken}`;
+        const url = `${config.pipedrive.baseUrl}/notes/${n.pipedrive_note_id}`;
         const r = await fetch(url, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'x-api-token': config.pipedrive.apiToken },
           body: JSON.stringify({ pinned_to_deal_flag: false }),
         });
         if (r.ok) unpinned++;
@@ -267,12 +274,12 @@ router.post('/unpin-notes', async (req, res) => {
 });
 
 // GET /api/calls/debug/pipedrive-note/:id — tjek om en Pipedrive-note eksisterer
-router.get('/debug/pipedrive-note/:id', async (req, res) => {
+router.get('/debug/pipedrive-note/:id', requireAdmin, async (req, res) => {
   const fetch = require('node-fetch');
   const config = require('../config');
-  const url = `${config.pipedrive.baseUrl}/notes/${req.params.id}?api_token=${config.pipedrive.apiToken}`;
+  const url = `${config.pipedrive.baseUrl}/notes/${encodeURIComponent(req.params.id)}`;
   try {
-    const r = await fetch(url);
+    const r = await fetch(url, { headers: { 'x-api-token': config.pipedrive.apiToken } });
     const data = await r.json();
     res.json({
       httpStatus: r.status,
@@ -290,7 +297,7 @@ router.get('/debug/pipedrive-note/:id', async (req, res) => {
 });
 
 // POST /api/calls/reset-attempts — nulstil attempt-tæller så failed kan prøves igen
-router.post('/reset-attempts', (req, res) => {
+router.post('/reset-attempts', requireAdmin, (req, res) => {
   const { db } = require('../db/database');
   try {
     const result = db.prepare(`
@@ -309,7 +316,7 @@ router.post('/reset-attempts', (req, res) => {
 // Find alle opkald der har recording_url men ingen transskription
 // og marker dem 'pending' igen, så processTranscriptions tager dem.
 // ============================================================
-router.post('/retry-transcription', async (req, res) => {
+router.post('/retry-transcription', requireAdmin, async (req, res) => {
   const { db } = require('../db/database');
   const { processTranscriptions } = require('../jobs/pollCalls');
   try {
@@ -323,6 +330,8 @@ router.post('/retry-transcription', async (req, res) => {
     `).run();
 
     // 2) Re-queue opkald med recording men uden transcription (inkl. tidligere failed)
+    //    Dato-guard: opkald ældre end 12 mdr. har fået fjernet rå tekst af
+    //    retention-jobbet (pollCalls.js) og skal IKKE transskriberes igen
     const requeued = db.prepare(`
       UPDATE calls
       SET transcription_status = 'pending'
@@ -330,6 +339,7 @@ router.post('/retry-transcription', async (req, res) => {
         AND recording_url != ''
         AND (transcription IS NULL OR transcription = '')
         AND transcription_status IN ('done', 'failed', 'pending', 'processing')
+        AND datetime(ended_at) > datetime('now', '-12 months')
     `).run();
 
     processTranscriptions().catch(e => console.error('[Retry] Transskription-kick fejlede:', e.message));
@@ -350,7 +360,7 @@ router.post('/retry-transcription', async (req, res) => {
 // Catch-up: hent alle opkald fra sidste N dage og (re)processer
 // dem der mangler transskription eller Pipedrive-note.
 // ============================================================
-router.post('/backfill', async (req, res) => {
+router.post('/backfill', requireAdmin, async (req, res) => {
   const { backfillCalls, processTranscriptions } = require('../jobs/pollCalls');
   const days = Math.min(Math.max(parseInt(req.query.days) || 7, 1), 30);
   try {

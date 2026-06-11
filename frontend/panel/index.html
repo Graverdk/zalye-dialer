@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Opkald — Zalye</title>
-  <script src="https://unpkg.com/@pipedrive/app-extensions-sdk@1/dist/bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pipedrive/app-extensions-sdk@0.16.0/dist/index.umd.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -116,6 +116,7 @@
     .call-status.processing { background: #fff3e0; color: #e65100; }
     .call-status.pending    { background: #f5f5f5; color: #888; }
     .call-status.failed     { background: #fce4ec; color: #c62828; }
+    .call-status.skipped    { background: #f5f5f5; color: #aaa; }
 
     /* Udfoldet indhold */
     .call-detail {
@@ -270,48 +271,72 @@
     let personPhone = '';
     let backendUrl = window.location.origin;
 
+    // Auth: Pipedrive sender et signeret JWT som ?token= på iframe-URL'en.
+    // Det byttes til et 12-timers session-token hos backenden.
+    let pipedriveToken = '';
+    let sessionToken = '';
+
+    function authHeaders() {
+      return sessionToken ? { 'Authorization': 'Bearer ' + sessionToken } : {};
+    }
+
+    async function ensureSession() {
+      if (!pipedriveToken) return false;
+      try {
+        const res = await fetch(`${backendUrl}/auth/session`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: pipedriveToken }),
+        });
+        if (!res.ok) return false;
+        sessionToken = (await res.json()).sessionToken || '';
+        return !!sessionToken;
+      } catch (err) {
+        console.error('Session-fejl:', err);
+        return false;
+      }
+    }
+
+    // Hvis sessionen udløber mens panelet står åbent, kan SDK'et udstede
+    // et frisk Pipedrive-token (get_signed_token) — så logger vi ind igen.
+    async function refreshSession() {
+      try {
+        if (sdk) {
+          const data = await sdk.execute('get_signed_token');
+          if (data && data.token) pipedriveToken = data.token;
+        }
+      } catch (e) { /* kommando ikke tilgængelig — ignorér */ }
+      return ensureSession();
+    }
+
     // ============================================================
-    // Init Pipedrive SDK
+    // Init: kontekst fra URL + Pipedrive SDK
     // ============================================================
     async function init() {
+      // Pipedrive sender resource/selectedIds/token som query-parametre til
+      // panel-iframes. type/id/phone beholdes som fallback til manuel test
+      // (kræver da admin-token, alm. kald uden token afvises af backenden).
+      const params = new URLSearchParams(window.location.search);
+      pipedriveToken = params.get('token') || '';
+      entityType = params.get('resource') || params.get('type') || '';
+      entityId = (params.get('selectedIds') || '').split(',')[0] || params.get('id') || null;
+      personPhone = (params.get('phone') || '').replace(/^(\+|00)/, '');
+      if (personPhone) document.getElementById('dial-input').value = personPhone;
+
+      await ensureSession();
+
+      // SDK bruges til at sætte panel-højden — data-konteksten kommer fra URL'en
       try {
         sdk = new AppExtensionsSDK();
         await sdk.initialize({ size: { height: 600 } });
-
-        const ctx = await sdk.getContext();
-        const data = ctx.data || {};
-
-        entityType = data.entity?.type || '';
-        entityId   = data.entity?.id || null;
-
-        // Hent telefonnummer fra context (Person-panel)
-        if (data.phone) {
-          const primaryPhone = Array.isArray(data.phone)
-            ? (data.phone.find(p => p.primary) || data.phone[0])?.value
-            : data.phone;
-          if (primaryPhone) {
-            personPhone = primaryPhone.replace(/^(\+|00)/, '');
-            document.getElementById('dial-input').value = primaryPhone;
-          }
-        }
-
-        await loadCalls();
-
-        // Genindlæs hvert 30. sekund (for at vise nye opkald + opdaterede AI-resultater)
-        setInterval(loadCalls, 30000);
-
       } catch (err) {
-        console.error('SDK init fejl:', err);
-
-        // Fallback til URL-parametre (til test)
-        const params = new URLSearchParams(window.location.search);
-        entityType = params.get('type') || 'deal';
-        entityId   = params.get('id') || null;
-        personPhone = params.get('phone') || '';
-
-        if (personPhone) document.getElementById('dial-input').value = personPhone;
-        await loadCalls();
+        console.warn('SDK init fejl (fortsætter uden):', err);
       }
+
+      await loadCalls();
+
+      // Genindlæs hvert 30. sekund (for at vise nye opkald + opdaterede AI-resultater)
+      setInterval(loadCalls, 30000);
     }
 
     // ============================================================
@@ -320,17 +345,31 @@
     async function loadCalls() {
       try {
         let url = `${backendUrl}/api/calls?`;
-        if (entityType === 'deal' && entityId)   url += `dealId=${entityId}`;
-        else if (entityType === 'person' && entityId) url += `personId=${entityId}`;
-        else if (personPhone) url += `phone=${personPhone}`;
+        if (entityType === 'deal' && entityId)        url += `dealId=${encodeURIComponent(entityId)}`;
+        else if (entityType === 'person' && entityId) url += `personId=${encodeURIComponent(entityId)}`;
+        else if (personPhone) url += `phone=${encodeURIComponent(personPhone)}`;
         else {
           showEmpty('Ingen kontekst tilgængelig');
           return;
         }
 
-        const res = await fetch(url);
+        let res = await fetch(url, { headers: authHeaders() });
+        if (res.status === 401 && await refreshSession()) {
+          res = await fetch(url, { headers: authHeaders() });
+        }
+        if (res.status === 401) {
+          showEmpty('Adgang udløbet — luk og åbn panelet igen');
+          return;
+        }
         const data = await res.json();
         allCalls = data.calls || [];
+
+        // Prefill ring-op-feltet med seneste kendte nummer
+        const input = document.getElementById('dial-input');
+        if (!input.value && allCalls.length > 0 && allCalls[0].phone_number) {
+          input.value = '+' + allCalls[0].phone_number;
+        }
+
         renderCalls();
       } catch (err) {
         console.error('Fejl ved hentning af opkald:', err);
@@ -379,6 +418,7 @@
         processing: 'Behandler...',
         pending:    'Venter',
         failed:     'Fejlet',
+        skipped:    'Ikke transskriberet',
       }[call.transcription_status] || '';
 
       const statusClass = call.transcription_status || 'pending';
@@ -399,7 +439,7 @@
           <div class="call-header">
             <div class="call-dir-icon ${dirClass}">${dirIcon}</div>
             <div class="call-meta">
-              <div class="call-phone">${formatPhone(call.phone_number)}</div>
+              <div class="call-phone">${escHtml(formatPhone(call.phone_number))}</div>
               <div class="call-info">${dirLabel} · ${date}${duration ? ' · ' + duration : ''}</div>
             </div>
             ${statusLabel ? `<span class="call-status ${statusClass}">${statusLabel}</span>` : ''}
@@ -436,6 +476,8 @@
                   ? '⚙️ Optagelsen behandles — kom tilbage om lidt'
                   : call.transcription_status === 'failed'
                   ? '❌ Transskription fejlede'
+                  : call.transcription_status === 'skipped'
+                  ? 'Ikke transskriberet (intet Pipedrive-match inden 7 dage)'
                   : '⏳ Venter på optagelse fra Relatel'}
               </div>
             `}
@@ -488,15 +530,19 @@
       btn.textContent = '⏳ Ringer...';
 
       try {
-        const res = await fetch(`${backendUrl}/api/calls/initiate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            toNumber: input,
-            personId: entityType === 'person' ? entityId : null,
-            dealId:   entityType === 'deal'   ? entityId : null,
-          }),
+        const payload = JSON.stringify({
+          toNumber: input,
+          personId: entityType === 'person' ? entityId : null,
+          dealId:   entityType === 'deal'   ? entityId : null,
         });
+        const doCall = () => fetch(`${backendUrl}/api/calls/initiate`, {
+          method: 'POST',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+          body: payload,
+        });
+
+        let res = await doCall();
+        if (res.status === 401 && await refreshSession()) res = await doCall();
 
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Fejl');
@@ -519,7 +565,7 @@
       document.getElementById('call-list').innerHTML = `
         <div class="empty-state">
           <div class="icon">📭</div>
-          <p>${msg}</p>
+          <p>${escHtml(msg)}</p>
         </div>
       `;
     }
@@ -533,14 +579,19 @@
 
     function formatPhone(num) {
       if (!num) return '—';
-      const n = num.replace(/^(\+|00)?45/, '').replace(/\D/g, '');
-      if (n.length === 8) return n.replace(/(\d{2})(\d{2})(\d{2})(\d{2})/, '+45 $1 $2 $3 $4');
-      return '+' + num;
+      // Tillad KUN cifre i output — caller-ID kan indeholde vilkårlige tegn
+      const digits = String(num).replace(/\D/g, '');
+      if (!digits) return '—';
+      const local = digits.replace(/^45/, '');
+      if (local.length === 8) return local.replace(/(\d{2})(\d{2})(\d{2})(\d{2})/, '+45 $1 $2 $3 $4');
+      return '+' + digits;
     }
 
     function escHtml(str) {
       if (!str) return '';
-      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return String(str)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }
 
     // Start!

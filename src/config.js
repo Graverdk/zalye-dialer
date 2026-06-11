@@ -41,5 +41,15 @@ module.exports = {
     path: optional('DB_PATH', './data/zalye.db'),
   },
 
+  security: {
+    // Pipedrive signerer panel-JWT'er med app'ens "JWT secret" hvis sat i
+    // Developer Hub — ellers med client_secret. Skal matche her.
+    panelJwtSecret: optional('PIPEDRIVE_JWT_SECRET', ''),
+    // Beskytter debug-/vedligeholdelses-endpoints. Uden denne er de deaktiveret.
+    adminSecret: optional('ADMIN_SECRET', ''),
+    // Hvis sat: Relatel-webhook skal kalde /api/webhook/relatel?secret=<denne>
+    webhookSecret: optional('WEBHOOK_SECRET', ''),
+  },
+
   pollIntervalSeconds: parseInt(optional('POLL_INTERVAL_SECONDS', '30')),
 };
