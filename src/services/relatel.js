@@ -167,9 +167,8 @@ async function getChat(uuid) {
 function normalizeMessage(msg) {
   const fromNum = msg.from_contact?.number || msg.from_number || '';
   const toNum = msg.to_contact?.number || msg.to_number || '';
-  const OUR_HOVEDNUMMER = '4571747007';
   // Retning: hvis "fra" = vores hovednummer → udgående, ellers indgående
-  const direction = msg.direction || (fromNum === OUR_HOVEDNUMMER ? 'outgoing' : 'incoming');
+  const direction = msg.direction || (fromNum === config.relatel.mainNumber ? 'outgoing' : 'incoming');
   // Remote = den anden part (ikke os)
   const remoteNum = direction === 'outgoing' ? toNum : fromNum;
   return {

@@ -572,7 +572,8 @@ async function fetchNewMessages() {
     const nm = relatel.normalizeMessage(msg);
     if (!nm.phone_number) continue;
 
-    // Gem ALTID i DB saa beskeden ikke genbehandles
+    // Gem ALTID i DB saa beskeden ikke genbehandles — koblingen til Pipedrive
+    // sker i linkUnmatchedMessages() nedenfor, som også samler ældre SMS op
     messages.upsert({
       relatel_id: nm.relatel_id,
       direction: nm.direction,
@@ -583,43 +584,56 @@ async function fetchNewMessages() {
       pipedrive_person_id: null,
       pipedrive_deal_id: null,
     });
+  }
 
-    const lookup = await lookupPerson(nm.phone_number);
-    if (!lookup || !lookup.personId) continue;
+  await linkUnmatchedMessages();
+}
 
-    // Opdater med Pipedrive-kobling
-    messages.upsert({
-      relatel_id: nm.relatel_id,
-      direction: nm.direction,
-      phone_number: nm.phone_number,
-      employee_number: nm.employee_number,
-      body: nm.body,
-      sent_at: nm.sent_at,
-      pipedrive_person_id: lookup.personId,
-      pipedrive_deal_id: lookup.latestDealId,
-    });
+// ============================================================
+// SMS uden Pipedrive-note: prøv at koble igen i UNMATCHED_WAIT_DAYS.
+// Samme regel som opkald — en SMS fra et nyt nummer får sin note, hvis
+// personen oprettes i Pipedrive inden for vinduet. Dækker også SMS, hvor
+// personen blev fundet, men note-oprettelsen fejlede.
+// ============================================================
+async function linkUnmatchedMessages() {
+  const cutoff = new Date(Date.now() - UNMATCHED_WAIT_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const pending = db.prepare(`
+    SELECT * FROM messages
+    WHERE pipedrive_note_id IS NULL
+      AND sent_at >= ?
+    ORDER BY sent_at ASC
+    LIMIT 50
+  `).all(cutoff);
+
+  for (const m of pending) {
+    let personId = m.pipedrive_person_id;
+    let dealId = m.pipedrive_deal_id;
+    if (!personId) {
+      const lookup = await lookupPerson(m.phone_number);
+      if (!lookup || !lookup.personId) continue;
+      personId = lookup.personId;
+      dealId = lookup.latestDealId;
+      db.prepare('UPDATE messages SET pipedrive_person_id = ?, pipedrive_deal_id = COALESCE(pipedrive_deal_id, ?) WHERE relatel_id = ?')
+        .run(personId, dealId, m.relatel_id);
+    }
 
     const noteId = await pipedrive.createSmsNote({
-      personId: lookup.personId,
-      dealId: lookup.latestDealId,
+      personId,
+      dealId,
       smsData: {
-        direction: nm.direction,
-        phoneNumber: nm.phone_number,
-        body: nm.body,
-        sentAt: nm.sent_at,
+        direction: m.direction,
+        phoneNumber: m.phone_number,
+        body: m.body,
+        sentAt: m.sent_at,
       },
     });
-    if (noteId && nm.relatel_id) {
-      messages.setNoteId(nm.relatel_id, noteId);
-      console.log('[SMS] SMS-note oprettet (note ' + noteId + ') for ' + nm.phone_number);
+    if (noteId) {
+      messages.setNoteId(m.relatel_id, noteId);
+      console.log('[SMS] SMS-note oprettet (note ' + noteId + ') for ' + m.phone_number);
     }
   }
 }
 
-// ============================================================
-// OPTIMERET: Spring kontakter over som allerede er tjekket
-// Hent kun kommentarer for kontakter med aendringer
-// ============================================================
 async function fetchNewNotes() {
   const lastChecked = state.get('last_notes_check') || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const checkTime = new Date().toISOString(); // tidsstempel FØR fetch — undgår huller

@@ -61,12 +61,14 @@ TRANSSKRIPTION:
 ${transcription}`;
 
   const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: config.anthropic.model,
     max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const raw = message.content[0].text.trim();
+  const textBlock = message.content.find((b) => b.type === 'text');
+  if (!textBlock) throw new Error('Claude returnerede intet tekstsvar');
+  const raw = textBlock.text.trim();
 
   // Parse JSON (tag det første { ... } match)
   const jsonMatch = raw.match(/\{[\s\S]*\}/);

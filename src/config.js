@@ -15,10 +15,13 @@ module.exports = {
   relatel: {
     baseUrl: 'https://app.relatel.dk/api/v2',
     accessToken: required('RELATEL_ACCESS_TOKEN'),
+    // Vores hovednummer (landekode, ingen +/00) — bruges til at afgøre SMS-retning
+    mainNumber: optional('RELATEL_MAIN_NUMBER', '4571747007').replace(/\D/g, ''),
   },
 
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
+    model: optional('CLAUDE_MODEL', 'claude-sonnet-5'),
   },
 
   elevenlabs: {
