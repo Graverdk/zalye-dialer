@@ -268,8 +268,7 @@ async function processTranscriptions() {
         summary,
         actionPoints,
         topics,
-        transcription,
-        diarizedTranscription,
+        insights: analysisResult,
       };
 
       // Re-try Pipedrive-lookup hvis vi ikke fik fat i personen ved første poll
@@ -336,6 +335,7 @@ async function processTranscriptions() {
             engagementScore: analysisResult.engagementScore,
             conversionLikelihood: analysisResult.conversionLikelihood,
             aiCoachingNote: analysisResult.aiCoachingNote,
+            profile: analysisResult.profile,
           });
           console.log('[AI] Sales intelligence gemt for call ' + call.id);
         } catch (insightErr) {

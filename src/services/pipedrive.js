@@ -90,9 +90,39 @@ function formatDuration(sec) {
 // Byg note-indhold til OPKALD
 // Overskrift gør det krystalklart at det er et opkald
 // ============================================================
+// Fast rækkefølge og faste labels HVER gang — agenten læser blokken via MCP
+// og skal kunne tælle/sammenligne på tværs af opkald. Ukendt = "ikke nævnt".
+function buildInsightBlock(ins) {
+  const p = ins.profile || {};
+  const none = 'ikke nævnt';
+  const val = (v) => (v === null || v === undefined || v === '' ? none : String(v));
+  const list = (a) => (Array.isArray(a) && a.length ? a.join('; ') : none);
+  const konk = (p.konkurrenter || []).map((k) => `${k.navn} (${k.forhold})`);
+  const lines = [
+    `Faggruppe: ${val(p.faggruppe)}`,
+    `Medarbejdere: ${val(p.antalMedarbejdere)}`,
+    `Driftssystem: ${val(p.driftssystem)}`,
+    `Regnskabsprogram: ${val(p.regnskabsprogram)}`,
+    `Lønprogram: ${val(p.loenprogram)}`,
+    `Andre systemer: ${list(p.andreSystemer)}`,
+    `Konkurrenter: ${list(konk)}`,
+    `Købskanaler: ${list(p.koebskanaler)}`,
+    `Udfordringer: ${list(ins.painPoints)}`,
+    `Indvendinger: ${list(ins.objections)}`,
+    `Købssignaler: ${list(ins.buyingSignals)}`,
+    `Næste skridt: ${list(ins.nextSteps)}`,
+    `Opkaldstype: ${val(ins.callType)}  ·  Udfald: ${val(ins.callOutcome)}  ·  Stadie: ${val(ins.customerStage)}  ·  Stemning: ${val(ins.sentiment)}`,
+    `Engagement: ${ins.engagementScore ? ins.engagementScore + '/10' : none}  ·  Sandsynlighed for salg: ${ins.conversionLikelihood ? ins.conversionLikelihood + '/10' : none}`,
+    `Coaching: ${val(ins.aiCoachingNote)}`,
+  ];
+  return `### Indsigter (skema v${ins.schemaVersion || 1})\n${lines.map((l) => `- ${l}`).join('\n')}\n\n`;
+}
+
+// Den fulde samtale sendes IKKE til Pipedrive: den bliver i dialerens egen
+// database og slettes efter 12 mdr. (GDPR-beslutning 11/6 + 24/9 2026)
 function buildCallNoteContent({
   direction, phoneNumber, startedAt, durationSec,
-  summary, actionPoints, topics, transcription, diarizedTranscription,
+  summary, actionPoints, topics, insights,
 }) {
   const dirLabel = direction === 'outgoing' ? 'Udgående' : 'Indgående';
   const date = formatDate(startedAt);
@@ -110,11 +140,8 @@ function buildCallNoteContent({
   if (topics && topics.length > 0) {
     content += `### Emner\n${topics.map(t => `- ${t}`).join('\n')}\n\n`;
   }
-  if (diarizedTranscription && diarizedTranscription.trim().length > 0) {
-    content += `### Samtale (Sælger / Kunde)\n${diarizedTranscription}\n\n`;
-  }
-  if (transcription && transcription.trim().length > 0) {
-    content += `### Fuld transskription (rå)\n${transcription}\n`;
+  if (insights) {
+    content += buildInsightBlock(insights);
   }
   return content;
 }

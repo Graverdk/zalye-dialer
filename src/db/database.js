@@ -201,6 +201,8 @@ ensureColumn('calls', 'transcription_attempts', 'INTEGER DEFAULT 0');
 // Fra 24/9 2026 lægges opkald/SMS som Pipedrive-aktiviteter (ældre rækker har kun note-id)
 ensureColumn('calls', 'pipedrive_activity_id', 'INTEGER');
 ensureColumn('messages', 'pipedrive_activity_id', 'INTEGER');
+// Virksomhedsprofil fra analysen (faggruppe, systemer, konkurrenter, købskanaler) som JSON
+ensureColumn('call_insights', 'profile_json', 'TEXT');
 
 // ============================================================
 // Hjælpefunktioner
@@ -313,7 +315,7 @@ const insights = {
           pain_points = ?, objections = ?, buying_signals = ?,
           competitor_mentions = ?, next_steps = ?,
           customer_stage = ?, engagement_score = ?, conversion_likelihood = ?,
-          ai_coaching_note = ?
+          ai_coaching_note = ?, profile_json = ?
         WHERE call_id = ?
       `).run(
         insightData.sentiment || null,
@@ -327,6 +329,7 @@ const insights = {
         insightData.engagementScore || null,
         insightData.conversionLikelihood || null,
         insightData.aiCoachingNote || null,
+        insightData.profile ? JSON.stringify(insightData.profile) : null,
         callId
       );
     } else {
@@ -336,8 +339,8 @@ const insights = {
           pain_points, objections, buying_signals,
           competitor_mentions, next_steps,
           customer_stage, engagement_score, conversion_likelihood,
-          ai_coaching_note
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ai_coaching_note, profile_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         callId,
         insightData.sentiment || null,
@@ -350,7 +353,8 @@ const insights = {
         insightData.customerStage || null,
         insightData.engagementScore || null,
         insightData.conversionLikelihood || null,
-        insightData.aiCoachingNote || null
+        insightData.aiCoachingNote || null,
+        insightData.profile ? JSON.stringify(insightData.profile) : null
       );
     }
   },

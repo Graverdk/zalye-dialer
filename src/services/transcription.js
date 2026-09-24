@@ -12,11 +12,24 @@ const config = require('../config');
 
 const SCRIBE_URL = 'https://api.elevenlabs.io/v1/speech-to-text';
 
-// Kontekst-prompt hjælper modellen med egennavne og fagtermer
-const DANISH_BIASED_KEYWORDS = [
+// Keyterms: ord Scribe skal genkende korrekt (egennavne, systemer, fagtermer).
+// OBS: parameteren hedder `keyterms` — før 24/9 2026 blev de sendt som
+// `bias_keywords`, som ElevenLabs ikke kender, så listen virkede aldrig.
+// Maks 1000 termer, hver < 50 tegn og højst 5 ord.
+const KEYTERMS = [
+  // Os og vores værktøjer
   'Zalye', 'Jeppe Graversen', 'Pipedrive', 'Relatel',
-  'håndværker', 'malerfix', 'gulvfix', 'flextagservice',
-  'demo', 'onboarding', 'abonnement', 'faktura', 'tilbud',
+  // Drifts-/sagsstyringssystemer
+  'Apacta', 'Ordrestyring', 'Minuba', 'e-regnskab', 'E-Komplet', 'Tabletten', 'Intempus', 'Planday',
+  // Regnskab
+  'e-conomic', 'Dinero', 'Billy', 'Uniconta', 'Visma', 'Business Central', 'Navision',
+  // Løn
+  'Danløn', 'Zenegy', 'Salary', 'Proløn', 'Lessor',
+  // Grossister
+  'Bygma', 'STARK', 'XL-BYG', 'Davidsen', 'Sanistål', 'Lemvigh-Müller', 'Brødrene Dahl', 'Ahlsell',
+  // Fag og fagtermer
+  'håndværker', 'anlægsgartner', 'tagdækker', 'facaderens', 'VVS',
+  'demo', 'onboarding', 'abonnement', 'faktura', 'tilbud', 'akkord', 'dagsseddel', 'timeregistrering',
 ];
 
 async function transcribe(audioBuffer, contentType = 'audio/mpeg', options = {}) {
@@ -24,7 +37,7 @@ async function transcribe(audioBuffer, contentType = 'audio/mpeg', options = {})
     throw new Error('ELEVENLABS_API_KEY mangler — tilføj den i Railway Variables');
   }
 
-  const { numSpeakers = 2 } = options;
+  const { numSpeakers = 2, withKeyterms = true } = options;
 
   console.log('[Scribe] Sender ' + audioBuffer.length + ' bytes til ElevenLabs Scribe...');
 
@@ -40,14 +53,14 @@ async function transcribe(audioBuffer, contentType = 'audio/mpeg', options = {})
 
   const form = new FormData();
   form.append('file', audioBuffer, { filename: 'call.' + ext, contentType });
-  form.append('model_id', 'scribe_v1');
+  form.append('model_id', config.elevenlabs.model);
   form.append('language_code', 'dan'); // ISO 639-3 for dansk
   form.append('diarize', 'true');
   form.append('num_speakers', String(numSpeakers));
   form.append('tag_audio_events', 'true');
   form.append('timestamps_granularity', 'word');
-  // Biased keywords hjælper Scribe genkende egennavne — sendes som bias_keywords
-  form.append('bias_keywords', JSON.stringify(DANISH_BIASED_KEYWORDS));
+  // Liste-parameter i multipart: ét felt pr. term
+  if (withKeyterms) for (const term of KEYTERMS) form.append('keyterms', term);
 
   const startTime = Date.now();
   let res;
@@ -70,6 +83,12 @@ async function transcribe(audioBuffer, contentType = 'audio/mpeg', options = {})
 
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
+    // Sikkerhedsnet: afviser Scribe forespørgslen som ugyldig, så prøv én gang
+    // uden keyterms — hellere en udskrift uden ordliste end ingen udskrift
+    if ((res.status === 400 || res.status === 422) && withKeyterms) {
+      console.warn('[Scribe] ' + res.status + ' med keyterms — prøver igen uden. Svar: ' + errText.substring(0, 300));
+      return transcribe(audioBuffer, contentType, { ...options, withKeyterms: false });
+    }
     // Specialcase kendte fejl så de er lette at spotte i logs
     if (res.status === 401) {
       throw new Error('Scribe 401 unauthorized efter ' + elapsed + 's — tjek ELEVENLABS_API_KEY');

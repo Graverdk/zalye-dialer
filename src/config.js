@@ -27,6 +27,7 @@ module.exports = {
   elevenlabs: {
     // Bruges til tale-til-tekst (Scribe) med indbygget speaker diarization
     apiKey: required('ELEVENLABS_API_KEY'),
+    model: optional('SCRIBE_MODEL', 'scribe_v2'),
   },
 
 
