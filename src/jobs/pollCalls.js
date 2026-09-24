@@ -15,9 +15,25 @@ const personCache = new Map();
 const POSITIVE_TTL = 10 * 60 * 1000;
 const NEGATIVE_TTL = 60 * 1000;
 
-// Cache over berigede kontakter (Relatel contact ID -> true)
-// Undgaar at scanne samme kontakter hvert 5. minut
-const enrichedContactIds = new Set();
+// Berigelse af Relatel-kontakter: hvornår hver kontakt sidst blev tjekket
+// gemmes i DB (overlever genstart — før startede hver deploy en fuld scanning
+// af 200 kontakter og ramte Pipedrives rate limit). Gen-tjek efter 7 dage.
+const ENRICH_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
+const ENRICH_MAX_PER_RUN = 25;
+db.exec(`CREATE TABLE IF NOT EXISTS enriched_contacts (
+  contact_id TEXT PRIMARY KEY,
+  checked_at INTEGER NOT NULL
+)`);
+const enrichedContactIds = {
+  has(id) {
+    const row = db.prepare('SELECT checked_at FROM enriched_contacts WHERE contact_id = ?').get(id);
+    return !!row && (Date.now() - row.checked_at) < ENRICH_RECHECK_MS;
+  },
+  add(id) {
+    db.prepare(`INSERT INTO enriched_contacts (contact_id, checked_at) VALUES (?, ?)
+      ON CONFLICT(contact_id) DO UPDATE SET checked_at = excluded.checked_at`).run(id, Date.now());
+  },
+};
 
 // ============================================================
 // In-flight-lås: samme job må aldrig køre to gange samtidig.
@@ -720,19 +736,32 @@ async function fetchNewNotes() {
 // ============================================================
 async function enrichContacts() {
   try {
+    if (pipedrive.isRateLimited()) {
+      console.log('[Enrich] Pipedrive rate limit ramt for nylig — springer over');
+      return;
+    }
     const contacts = await relatel.getContacts({ limit: 200 });
     let enriched = 0;
     let inSync = 0;
+    let lookups = 0;
 
     for (const contact of contacts) {
       if (!contact.number) continue;
 
-      // Spring over allerede berigede kontakter (in-memory cache)
-      // OBS: cache nulstilles ved server-restart så vi indhenter evt. ændringer
+      // Spring over kontakter tjekket inden for de sidste 7 dage (gemt i DB)
       if (enrichedContactIds.has(String(contact.id))) continue;
+
+      // Højst ENRICH_MAX_PER_RUN opslag pr. kørsel — resten tages næste halve time
+      if (lookups >= ENRICH_MAX_PER_RUN) break;
+      lookups++;
 
       // Slå op i Pipedrive — KILDE TIL SANDHED
       const person = await pipedrive.findPersonByPhone(contact.number);
+      if (!person && pipedrive.isRateLimited()) {
+        // Ikke "ingen match" — Pipedrive afviste kaldet. Stop og prøv næste kørsel
+        console.warn('[Enrich] Pipedrive rate limit — stopper kørslen');
+        break;
+      }
       if (!person) {
         // Ingen match i Pipedrive — lad Relatel-navnet stå som det er
         enrichedContactIds.add(String(contact.id));

@@ -8,6 +8,13 @@ const TOKEN = config.pipedrive.apiToken;
 const GET_HEADERS  = { 'x-api-token': TOKEN, 'Accept': 'application/json' };
 const JSON_HEADERS = { 'x-api-token': TOKEN, 'Content-Type': 'application/json' };
 
+// Husk hvornår Pipedrive sidst sagde 429 (request over limit), så
+// baggrundsjob kan holde pause — loftet deles med MCP-agenten
+let lastRateLimitAt = 0;
+function isRateLimited(windowMs = 60 * 1000) {
+  return Date.now() - lastRateLimitAt < windowMs;
+}
+
 async function findPersonByPhone(rawPhone) {
   if (!rawPhone) return null;
   const digits = rawPhone.replace(/\D/g, '');
@@ -20,6 +27,7 @@ async function findPersonByPhone(rawPhone) {
     const res = await fetch(url, { headers: GET_HEADERS });
     const data = await res.json();
     if (!res.ok) {
+      if (res.status === 429) lastRateLimitAt = Date.now();
       console.error(`[Pipedrive] Søge-fejl ${res.status} for ${localNumber}: ${JSON.stringify(data)}`);
       return null;
     }
@@ -386,6 +394,7 @@ async function createPerson({ name, phone, orgName }) {
 }
 
 module.exports = {
+  isRateLimited,
   findPersonByPhone,
   getPersonById,
   getPersonWithDeals,
