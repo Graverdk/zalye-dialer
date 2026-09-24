@@ -118,7 +118,7 @@ async function pollNewCalls() {
     }
 
     const existing = calls.getByUuid(nc.relatel_uuid);
-    if (existing && existing.pipedrive_note_id) continue;
+    if (existing && (existing.pipedrive_note_id || existing.pipedrive_activity_id)) continue;
 
     // Brug eksisterende kobling (fx fra click-to-call) før telefon-opslag
     let personId = (existing && existing.pipedrive_person_id) || null;
@@ -132,7 +132,7 @@ async function pollNewCalls() {
     }
     if (!personId) continue;
 
-    const noteId = await pipedrive.createCallNote({
+    const activityId = await pipedrive.createCallActivity({
       personId,
       dealId,
       callData: {
@@ -142,10 +142,10 @@ async function pollNewCalls() {
         durationSec: nc.duration_sec,
       },
     });
-    if (noteId) {
-      db.prepare('UPDATE calls SET pipedrive_note_id = ?, pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
-        .run(noteId, personId, dealId, nc.relatel_uuid);
-      console.log('[Poll] Opkaldsnote oprettet (note ' + noteId + ') for ' + nc.phone_number);
+    if (activityId) {
+      db.prepare('UPDATE calls SET pipedrive_activity_id = ?, pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
+        .run(activityId, personId, dealId, nc.relatel_uuid);
+      console.log('[Poll] Opkaldsaktivitet oprettet (aktivitet ' + activityId + ') for ' + nc.phone_number);
     }
   }
 }
@@ -276,7 +276,7 @@ async function processTranscriptions() {
       // (typisk fordi lead først blev konverteret til person efter opkaldet)
       let personId = call.pipedrive_person_id;
       let dealId = call.pipedrive_deal_id;
-      if (!personId && !call.pipedrive_note_id && call.phone_number) {
+      if (!personId && !call.pipedrive_note_id && !call.pipedrive_activity_id && call.phone_number) {
         const lookup = await lookupPerson(call.phone_number);
         if (lookup && lookup.personId) {
           personId = lookup.personId;
@@ -287,19 +287,23 @@ async function processTranscriptions() {
         }
       }
 
-      if (call.pipedrive_note_id) {
+      if (call.pipedrive_activity_id) {
+        console.log('[AI] Opdaterer Pipedrive-aktivitet ' + call.pipedrive_activity_id + ' med transskription...');
+        await pipedrive.updateCallActivity(call.pipedrive_activity_id, { callData });
+      } else if (call.pipedrive_note_id) {
+        // Opkald fra før 24/9 2026 har en note — den opdateres fortsat
         console.log('[AI] Opdaterer Pipedrive-note ' + call.pipedrive_note_id + ' med transskription...');
         await pipedrive.updateNote(call.pipedrive_note_id, { callData });
       } else if (personId || dealId) {
-        const newNoteId = await pipedrive.createCallNote({
+        const newActivityId = await pipedrive.createCallActivity({
           personId,
           dealId,
           callData,
         });
-        if (newNoteId) {
-          db.prepare('UPDATE calls SET pipedrive_note_id = ? WHERE relatel_uuid = ?')
-            .run(newNoteId, call.relatel_uuid);
-          console.log('[AI] Ny Pipedrive-note oprettet: ' + newNoteId);
+        if (newActivityId) {
+          db.prepare('UPDATE calls SET pipedrive_activity_id = ? WHERE relatel_uuid = ?')
+            .run(newActivityId, call.relatel_uuid);
+          console.log('[AI] Ny Pipedrive-opkaldsaktivitet oprettet: ' + newActivityId);
         }
       } else {
         console.log('[AI] Ingen Pipedrive-match for ' + call.phone_number + ' — note ikke oprettet');
@@ -420,7 +424,7 @@ async function backfillCalls(days = 7) {
     if (!existing) continue;
 
     // Tjek om opkaldet allerede er fuldt processeret
-    if (existing.pipedrive_note_id && existing.transcription_status === 'done' && existing.transcription) {
+    if ((existing.pipedrive_note_id || existing.pipedrive_activity_id) && existing.transcription_status === 'done' && existing.transcription) {
       alreadyDone++;
       continue;
     }
@@ -444,8 +448,8 @@ async function backfillCalls(days = 7) {
     // Opret initial note i Pipedrive hvis der er match og ingen note endnu
     // (transskription tilføjes senere via processTranscriptions hvis recording findes)
     let notesCreated = 0;
-    if (personId && !existing.pipedrive_note_id) {
-      const noteId = await pipedrive.createCallNote({
+    if (personId && !existing.pipedrive_note_id && !existing.pipedrive_activity_id) {
+      const noteId = await pipedrive.createCallActivity({
         personId,
         dealId,
         callData: {
@@ -456,10 +460,10 @@ async function backfillCalls(days = 7) {
         },
       });
       if (noteId) {
-        db.prepare('UPDATE calls SET pipedrive_note_id = ? WHERE relatel_uuid = ?')
+        db.prepare('UPDATE calls SET pipedrive_activity_id = ? WHERE relatel_uuid = ?')
           .run(noteId, nc.relatel_uuid);
         notesCreated++;
-        console.log('[Backfill] Initial note oprettet (' + noteId + ') for ' + nc.phone_number);
+        console.log('[Backfill] Opkaldsaktivitet oprettet (' + noteId + ') for ' + nc.phone_number);
       }
     }
 
@@ -600,6 +604,7 @@ async function linkUnmatchedMessages() {
   const pending = db.prepare(`
     SELECT * FROM messages
     WHERE pipedrive_note_id IS NULL
+      AND pipedrive_activity_id IS NULL
       AND sent_at >= ?
     ORDER BY sent_at ASC
     LIMIT 50
@@ -617,7 +622,7 @@ async function linkUnmatchedMessages() {
         .run(personId, dealId, m.relatel_id);
     }
 
-    const noteId = await pipedrive.createSmsNote({
+    const { activityId, noteId } = await pipedrive.createSmsRecord({
       personId,
       dealId,
       smsData: {
@@ -627,9 +632,12 @@ async function linkUnmatchedMessages() {
         sentAt: m.sent_at,
       },
     });
-    if (noteId) {
+    if (activityId) {
+      db.prepare('UPDATE messages SET pipedrive_activity_id = ? WHERE relatel_id = ?').run(activityId, m.relatel_id);
+      console.log('[SMS] SMS-aktivitet oprettet (aktivitet ' + activityId + ') for ' + m.phone_number);
+    } else if (noteId) {
       messages.setNoteId(m.relatel_id, noteId);
-      console.log('[SMS] SMS-note oprettet (note ' + noteId + ') for ' + m.phone_number);
+      console.log('[SMS] SMS-note oprettet som nødløsning (note ' + noteId + ') for ' + m.phone_number);
     }
   }
 }

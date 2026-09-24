@@ -154,39 +154,150 @@ async function updateNote(noteId, { callData }) {
   return data?.data?.id || null;
 }
 
-async function createCallActivity({ dealId, personId, subject, durationSec, doneAt }) {
-  const body = {
-    subject,
-    type: 'call',
-    done: 1,
-    due_date: doneAt ? doneAt.split('T')[0] : new Date().toISOString().split('T')[0],
-    duration: durationSec
-      ? `${String(Math.floor(durationSec / 3600)).padStart(2,'0')}:${String(Math.floor((durationSec % 3600)/60)).padStart(2,'0')}:${String(durationSec % 60).padStart(2,'0')}`
-      : '00:00:00',
-  };
-  if (dealId) body.deal_id = dealId;
-  if (personId) body.person_id = personId;
+// ============================================================
+// AKTIVITETER — opkald og SMS lægges som UDFØRTE aktiviteter med hver sin
+// type ('call' / 'SMS'), så de kan skilles fra noter i data (MCP-agenten
+// læser type-feltet). done=1 + busy_flag=false: ingen to-do, ingen
+// optaget-tid i kalenderen. Noter forbeholdes rigtige noter.
+// ============================================================
 
+// Note-feltet på en aktivitet er HTML — omsæt vores lette markdown
+function toActivityHtml(md) {
+  const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return md.split('\n').map((line) => {
+    let l = esc(line);
+    if (/^#{2,3} /.test(l)) return '<b>' + l.replace(/^#{2,3} /, '') + '</b>';
+    l = l.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/^- /, '• ');
+    return l;
+  }).join('<br>');
+}
+
+// Pipedrive v1: due_date/due_time i UTC, duration som HH:MM
+function dueFields(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  const t = isNaN(d) ? new Date() : d;
+  return { due_date: t.toISOString().slice(0, 10), due_time: t.toISOString().slice(11, 16) };
+}
+function durationHHMM(sec) {
+  if (!sec || sec <= 0) return undefined;
+  const mins = Math.max(1, Math.round(sec / 60));
+  return String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
+}
+
+async function postActivity(body, label) {
   const res = await fetch(`${BASE}/activities`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error(`[Pipedrive] ${label} fejl ${res.status}: ${JSON.stringify(data)}`);
+    return null;
+  }
   return data?.data?.id || null;
+}
+
+async function createCallActivity({ dealId, personId, callData }) {
+  const dirLabel = callData.direction === 'outgoing' ? 'Udgående' : 'Indgående';
+  const body = {
+    subject: `Opkald — ${dirLabel}`,
+    type: 'call',
+    done: 1,
+    busy_flag: false,
+    ...dueFields(callData.startedAt),
+    note: toActivityHtml(buildCallNoteContent(callData)),
+  };
+  const dur = durationHHMM(callData.durationSec);
+  if (dur) body.duration = dur;
+  if (dealId) body.deal_id = dealId;
+  if (personId) body.person_id = personId;
+  return postActivity(body, 'createCallActivity');
+}
+
+async function updateCallActivity(activityId, { callData }) {
+  const res = await fetch(`${BASE}/activities/${activityId}`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ note: toActivityHtml(buildCallNoteContent(callData)) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error(`[Pipedrive] updateCallActivity fejl ${res.status}: ${JSON.stringify(data)}`);
+    return null;
+  }
+  return data?.data?.id || null;
+}
+
+// Aktivitetstypen "SMS" findes ikke som standard i Pipedrive — slå op, og
+// opret den én gang hvis den mangler (ikon: taleboble)
+let smsTypeKey = null;
+async function ensureSmsActivityType() {
+  if (smsTypeKey) return smsTypeKey;
+  try {
+    const res = await fetch(`${BASE}/activityTypes`, { headers: GET_HEADERS });
+    const data = await res.json();
+    const found = (data?.data || []).find(
+      (t) => t.active_flag !== false && String(t.name || '').trim().toLowerCase() === 'sms'
+    );
+    if (found) return (smsTypeKey = found.key_string);
+
+    const cr = await fetch(`${BASE}/activityTypes`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'SMS', icon_key: 'bubble' }),
+    });
+    const cd = await cr.json().catch(() => ({}));
+    if (!cr.ok || !cd?.data?.key_string) {
+      console.error(`[Pipedrive] Kunne ikke oprette aktivitetstypen SMS (${cr.status}): ${JSON.stringify(cd)}`);
+      return null;
+    }
+    console.log('[Pipedrive] Aktivitetstype "SMS" oprettet (key: ' + cd.data.key_string + ')');
+    return (smsTypeKey = cd.data.key_string);
+  } catch (e) {
+    console.error('[Pipedrive] ensureSmsActivityType fejl:', e.message);
+    return null;
+  }
+}
+
+// Returnerer { activityId } — eller { noteId } som nødløsning, hvis
+// SMS-typen ikke kan oprettes (så mister vi aldrig en SMS)
+async function createSmsRecord({ personId, dealId, smsData }) {
+  const typeKey = await ensureSmsActivityType();
+  if (!typeKey) {
+    const noteId = await createSmsNote({ personId, dealId, smsData });
+    return { noteId };
+  }
+  const { direction, body: msgBody, sentAt } = smsData;
+  const dirLabel = direction === 'outgoing' ? 'Sendt' : 'Modtaget';
+  const snippet = (msgBody || '').replace(/\s+/g, ' ').trim();
+  const body = {
+    subject: `SMS — ${dirLabel}` + (snippet ? `: ${snippet.length > 60 ? snippet.slice(0, 57) + '…' : snippet}` : ''),
+    type: typeKey,
+    done: 1,
+    busy_flag: false,
+    ...dueFields(sentAt),
+    note: toActivityHtml(buildSmsContent(smsData)),
+  };
+  if (dealId) body.deal_id = dealId;
+  if (personId) body.person_id = personId;
+  const activityId = await postActivity(body, 'createSmsActivity');
+  return { activityId };
 }
 
 // ============================================================
 // SMS-note med tydelig overskrift
 // ============================================================
-async function createSmsNote({ personId, dealId, smsData }) {
-  const { direction, phoneNumber, body: msgBody, sentAt } = smsData;
+function buildSmsContent({ direction, phoneNumber, body: msgBody, sentAt }) {
   const dirLabel = direction === 'outgoing' ? 'Sendt' : 'Modtaget';
-  const date = formatDate(sentAt);
-
   let content = `## SMS — ${dirLabel}\n`;
-  content += `**Tidspunkt:** ${date}  ·  **Nummer:** ${phoneNumber || '—'}\n\n`;
+  content += `**Tidspunkt:** ${formatDate(sentAt)}  ·  **Nummer:** ${phoneNumber || '—'}\n\n`;
   content += `### Besked\n${msgBody || '_(tom besked)_'}\n`;
+  return content;
+}
+
+async function createSmsNote({ personId, dealId, smsData }) {
+  const content = buildSmsContent(smsData);
 
   const noteBody = { content };
   if (dealId) noteBody.deal_id = dealId;
@@ -254,7 +365,10 @@ module.exports = {
   createCallNote,
   updateNote,
   createCallActivity,
+  updateCallActivity,
   createSmsNote,
+  createSmsRecord,
+  ensureSmsActivityType,
   createRelatelNote,
   createPerson,
 };

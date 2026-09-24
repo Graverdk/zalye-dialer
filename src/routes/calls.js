@@ -221,7 +221,8 @@ router.get('/debug/db-status', requireAdmin, (req, res) => {
         pipedrive_deal_id,
         pipedrive_note_id,
         pipedrive_person_id IS NOT NULL AS linked,
-        pipedrive_note_id IS NOT NULL AS has_note
+        pipedrive_activity_id,
+        (pipedrive_note_id IS NOT NULL OR pipedrive_activity_id IS NOT NULL) AS has_note
       FROM calls
       ORDER BY started_at DESC
       LIMIT 30

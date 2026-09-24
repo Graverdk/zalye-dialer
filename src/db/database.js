@@ -198,6 +198,9 @@ function ensureColumn(table, column, definition) {
 }
 ensureColumn('calls', 'transcription_error', 'TEXT');
 ensureColumn('calls', 'transcription_attempts', 'INTEGER DEFAULT 0');
+// Fra 24/9 2026 lægges opkald/SMS som Pipedrive-aktiviteter (ældre rækker har kun note-id)
+ensureColumn('calls', 'pipedrive_activity_id', 'INTEGER');
+ensureColumn('messages', 'pipedrive_activity_id', 'INTEGER');
 
 // ============================================================
 // Hjælpefunktioner
