@@ -13,7 +13,9 @@ async function findPersonByPhone(rawPhone) {
   const digits = rawPhone.replace(/\D/g, '');
   if (digits.length < 8) return null;
   const localNumber = digits.slice(-8);
-  const url = `${BASE}/persons/search?term=${encodeURIComponent(localNumber)}&fields=phone`;
+  // exact_match: uden den laver Pipedrive delvist match på cifferstrengen, og
+  // så kan et vilkårligt nummer der INDEHOLDER de otte cifre komme retur.
+  const url = `${BASE}/persons/search?term=${encodeURIComponent(localNumber)}&fields=phone&exact_match=true`;
   try {
     const res = await fetch(url, { headers: GET_HEADERS });
     const data = await res.json();
@@ -22,9 +24,21 @@ async function findPersonByPhone(rawPhone) {
       return null;
     }
     const items = data?.data?.items || [];
+    // Verificér at den fundne person rent faktisk HAR det nummer vi ringede til.
+    // Før blev items[0] taget blindt, og et fejlmatch blev cachet i ti minutter
+    // og skrevet tilbage til Relatel som kontaktens visningsnavn.
+    const hit = items.find(({ item }) =>
+      (item?.phones || []).some(
+        (p) => String(p?.value ?? p).replace(/\D/g, '').slice(-8) === localNumber
+      )
+    );
+    if (hit) {
+      console.log(`[Pipedrive] Fandt kontakt for ${localNumber} (fra ${digits}) -> personId ${hit.item.id}`);
+      return hit.item;
+    }
     if (items.length > 0) {
-      console.log(`[Pipedrive] Fandt kontakt for ${localNumber} (fra ${digits}) -> personId ${items[0].item.id}`);
-      return items[0].item;
+      console.warn(`[Pipedrive] ${items.length} træf for ${localNumber}, men ingen med et matchende nummer — afvist for at undgå fejlmatch`);
+      return null;
     }
     console.log(`[Pipedrive] Ingen kontakt fundet for ${localNumber} (fra ${digits})`);
     return null;
