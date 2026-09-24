@@ -49,6 +49,10 @@ module.exports = {
     adminSecret: optional('ADMIN_SECRET', ''),
     // Hvis sat: Relatel-webhook skal kalde /api/webhook/relatel?secret=<denne>
     webhookSecret: optional('WEBHOOK_SECRET', ''),
+    // Signeringsnøglen Relatel viser når webhooken oprettes (Firmaadministration → Webhooks).
+    // Når den er sat, afvises alt uden gyldig Relatel-Signature, og polling
+    // skrues ned til et sikkerhedsnet hvert 15. minut.
+    relatelWebhookSigningSecret: optional('RELATEL_WEBHOOK_SECRET', ''),
   },
 
   pollIntervalSeconds: parseInt(optional('POLL_INTERVAL_SECONDS', '30')),

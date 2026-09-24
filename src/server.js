@@ -21,7 +21,8 @@ app.use(cors({
   origin: [/\.pipedrive\.com$/, /^https?:\/\/localhost(:\d+)?$/],
   credentials: true,
 }));
-app.use(express.json());
+// Gem den rå body — Relatel-webhooks signeres over de præcise bytes
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
 
 // ============================================================

@@ -858,13 +858,19 @@ function start() {
   // endpointet til øjeblikkelig processering hvis webhook konfigureres.
   // ============================================================
 
-  // Opkald: hvert minut (før: 30s)
-  cron.schedule('0 * * * * *', async () => {
+  // Med Relatel-webhooks slået til (signeringsnøgle sat) er polling kun et
+  // sikkerhedsnet: webhooken vækker os med det samme, cron fanger evt. tabte events.
+  const webhooksOn = !!config.security.relatelWebhookSigningSecret;
+  const callCron = webhooksOn ? '0 */15 * * * *' : '0 * * * * *';
+  const smsCron  = webhooksOn ? '30 */15 * * * *' : '0 */5 * * * *';
+
+  // Opkald: hvert minut uden webhooks, hvert 15. minut med
+  cron.schedule(callCron, async () => {
     try { await jobs.pollNewCalls(); } catch (e) { console.error('[Poll] Fejl:', e.message); }
   });
 
-  // SMS: hvert 5. minut (før: 1 min)
-  cron.schedule('0 */5 * * * *', async () => {
+  // SMS: hvert 5. minut uden webhooks, hvert 15. minut med
+  cron.schedule(smsCron, async () => {
     try { await jobs.fetchNewMessages(); } catch (e) { console.error('[SMS] Fejl:', e.message); }
   });
 
@@ -893,7 +899,7 @@ function start() {
     try { await jobs.autoRetryFailed(); } catch (e) { console.error('[AutoRetry] Fejl:', e.message); }
   });
 
-  console.log('[Poll] Cron-jobs startet — optimeret cadence (opkald: 60s, SMS: 5min, transskription: 2min, retry: 3min, noter: 15min, berigelse: 30min, auto-retry: 10min)');
+  console.log('[Poll] Cron-jobs startet — webhooks ' + (webhooksOn ? 'TIL (opkald+SMS: sikkerhedsnet hvert 15. min)' : 'FRA (opkald: 60s, SMS: 5min)') + ', transskription: 2min, retry: 3min, noter: 15min, berigelse: 30min, auto-retry: 10min');
 }
 
 // Eksportér de LÅSTE versioner — webhook/routes må ikke kunne starte dobbeltkørsler
