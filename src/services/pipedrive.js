@@ -1,5 +1,6 @@
 const fetch = require('node-fetch');
 const config = require('../config');
+const { buildCoachingBlock } = require('./coaching');
 
 const BASE = config.pipedrive.baseUrl;
 const TOKEN = config.pipedrive.apiToken;
@@ -63,12 +64,18 @@ async function getPersonById(personId) {
   return data?.data || null;
 }
 
+// Åben deal først. Ellers den nyeste VUNDNE deal: vundne kunder ligger i
+// Onboarding-pipelinen, og opkald til dem (opstart, opfølgning) skal også
+// lande på dealen — ellers mister dealen sin historik (fejl fundet 7/10).
 async function getPersonWithDeals(personId) {
-  const url = `${BASE}/persons/${personId}/deals?status=open&limit=1`;
-  const res = await fetch(url, { headers: GET_HEADERS });
-  const data = await res.json();
-  const deals = data?.data || [];
-  return { latestDealId: deals[0]?.id || null };
+  for (const status of ['open', 'won']) {
+    const url = `${BASE}/persons/${personId}/deals?status=${status}&sort=update_time%20DESC&limit=1`;
+    const res = await fetch(url, { headers: GET_HEADERS });
+    const data = await res.json().catch(() => ({}));
+    const deal = (data?.data || [])[0];
+    if (deal?.id) return { latestDealId: deal.id };
+  }
+  return { latestDealId: null };
 }
 
 // ============================================================
@@ -102,6 +109,7 @@ function formatDuration(sec) {
 // og skal kunne tælle/sammenligne på tværs af opkald. Ukendt = "ikke nævnt".
 function buildInsightBlock(ins) {
   const p = ins.profile || {};
+  const j = ins.journey || {};
   const none = 'ikke nævnt';
   const val = (v) => (v === null || v === undefined || v === '' ? none : String(v));
   const list = (a) => (Array.isArray(a) && a.length ? a.join('; ') : none);
@@ -115,6 +123,12 @@ function buildInsightBlock(ins) {
     `Andre systemer: ${list(p.andreSystemer)}`,
     `Konkurrenter: ${list(konk)}`,
     `Købskanaler: ${list(p.koebskanaler)}`,
+    `Kontaktens rolle: ${val(j.kontaktRolle)}`,
+    `Anledning: ${val(j.anledning)}`,
+    `Primær smerte: ${val(j.primaerSmerte)}`,
+    `Konsekvens: ${list(j.konsekvens)}`,
+    `Beslutning: ${val(j.beslutning)}`,
+    `Kundens ord: ${list((j.kundensOrd || []).map((q) => '"' + String(q).replace(/\s*[;"\n]+\s*/g, ' ').trim() + '"'))}`,
     `Udfordringer: ${list(ins.painPoints)}`,
     `Indvendinger: ${list(ins.objections)}`,
     `Købssignaler: ${list(ins.buyingSignals)}`,
@@ -126,11 +140,24 @@ function buildInsightBlock(ins) {
   return `### Indsigter (skema v${ins.schemaVersion || 1})\n${lines.map((l) => `- ${l}`).join('\n')}\n\n`;
 }
 
+// Hvad dialeren selv gjorde i Pipedrive efter kaldet. FASTE labels —
+// Salgscoach-appen viser dem under "I Pipedrive" (insights.js: parsePipedriveBlock).
+function buildPipedriveBlock({ personName, dealTitle, changes }) {
+  const clean = (s) => String(s || '').replace(/\s*[;\n]+\s*/g, ', ').trim();
+  const lines = [
+    `Opkald lagt på: ${clean(personName) || 'kontakten'}${dealTitle ? ` · deal "${clean(dealTitle)}"` : ' · ingen deal'}`,
+    ...((changes || []).length
+      ? changes.map((c) => `Udfyldt (var tomt): ${clean(c.felt)} → ${clean(c.vaerdi)}`)
+      : ['Udfyldt (var tomt): intet']),
+  ];
+  return `### Pipedrive (skema v1)\n${lines.map((l) => `- ${l}`).join('\n')}\n\n`;
+}
+
 // Den fulde samtale sendes IKKE til Pipedrive: den bliver i dialerens egen
 // database og slettes efter 12 mdr. (GDPR-beslutning 11/6 + 24/9 2026)
 function buildCallNoteContent({
   direction, phoneNumber, startedAt, durationSec,
-  summary, actionPoints, topics, insights,
+  summary, actionPoints, topics, insights, coaching, pipedrive,
 }) {
   const dirLabel = direction === 'outgoing' ? 'Udgående' : 'Indgående';
   const date = formatDate(startedAt);
@@ -150,6 +177,12 @@ function buildCallNoteContent({
   }
   if (insights) {
     content += buildInsightBlock(insights);
+  }
+  if (coaching) {
+    content += buildCoachingBlock(coaching);
+  }
+  if (pipedrive) {
+    content += buildPipedriveBlock(pipedrive);
   }
   return content;
 }
@@ -250,11 +283,13 @@ async function createCallActivity({ dealId, personId, callData }) {
   return postActivity(body, 'createCallActivity');
 }
 
-async function updateCallActivity(activityId, { callData }) {
+async function updateCallActivity(activityId, { callData, dealId }) {
+  const body = { note: toActivityHtml(buildCallNoteContent(callData)) };
+  if (dealId) body.deal_id = dealId; // fx når dealen først blev fundet efter kaldet
   const res = await fetch(`${BASE}/activities/${activityId}`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ note: toActivityHtml(buildCallNoteContent(callData)) }),
+    body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

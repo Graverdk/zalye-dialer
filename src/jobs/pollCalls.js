@@ -6,6 +6,8 @@ const relatel = require('../services/relatel');
 const pipedrive = require('../services/pipedrive');
 const { transcribe, buildDiarizedTranscript } = require('../services/transcription');
 const claude = require('../services/claude');
+const coaching = require('../services/coaching');
+const { autofillFromCall } = require('../services/autofill');
 
 // In-memory cache: phone number -> { personId, latestDealId, ts }
 // Positive matches caches i 10 min (sjældent skifter de).
@@ -276,6 +278,34 @@ async function processTranscriptions() {
         }
       }
 
+      // ============================================================
+      // SALGSCOACHING — kun når der var en rigtig samtale. Best effort:
+      // fejler coachingen, lander analysen alligevel i Pipedrive.
+      // ============================================================
+      let coachingResult = null;
+      if (analysisResult && !isUnanswered) {
+        try {
+          const history = db.prepare(`
+            SELECT coaching_json, started_at FROM calls
+            WHERE coaching_json IS NOT NULL AND relatel_uuid != ?
+            ORDER BY datetime(started_at) DESC LIMIT 10
+          `).all(call.relatel_uuid);
+          console.log('[Coach] Coacher kaldet...');
+          coachingResult = await coaching.coachCall({
+            transcription: diarizedTranscription || transcription,
+            direction: call.direction,
+            durationSec: call.duration_sec,
+            analysis: analysisResult,
+            history,
+          });
+          db.prepare('UPDATE calls SET coaching_json = ? WHERE relatel_uuid = ?')
+            .run(JSON.stringify(coachingResult), call.relatel_uuid);
+        } catch (coachErr) {
+          console.error('[Coach] Coaching fejlede (analysen sendes alligevel):', coachErr.message);
+          coachingResult = null;
+        }
+      }
+
       const callData = {
         direction: call.direction,
         phoneNumber: call.phone_number,
@@ -285,6 +315,7 @@ async function processTranscriptions() {
         actionPoints,
         topics,
         insights: analysisResult,
+        coaching: coachingResult,
       };
 
       // Re-try Pipedrive-lookup hvis vi ikke fik fat i personen ved første poll
@@ -302,9 +333,24 @@ async function processTranscriptions() {
         }
       }
 
+      // ============================================================
+      // UDFYLD TOMME FELTER i Pipedrive (antal ansatte, fag, systemer,
+      // rolle, anledning, indvending) — og skriv i noten, hvad der blev
+      // gjort, så Jeppe kan se det. Best effort.
+      // ============================================================
+      if (analysisResult && personId && !pipedrive.isRateLimited()) {
+        try {
+          const af = await autofillFromCall({ personId, dealId, analysis: analysisResult });
+          callData.pipedrive = { personName: af.personName, dealTitle: af.dealTitle, changes: af.changes };
+          if (af.changes.length) console.log('[Pipedrive] Udfyldte tomme felter: ' + af.changes.map((c) => c.felt).join(', '));
+        } catch (afErr) {
+          console.error('[Pipedrive] Autoudfyldning fejlede:', afErr.message);
+        }
+      }
+
       if (call.pipedrive_activity_id) {
         console.log('[AI] Opdaterer Pipedrive-aktivitet ' + call.pipedrive_activity_id + ' med transskription...');
-        await pipedrive.updateCallActivity(call.pipedrive_activity_id, { callData });
+        await pipedrive.updateCallActivity(call.pipedrive_activity_id, { callData, dealId });
       } else if (call.pipedrive_note_id) {
         // Opkald fra før 24/9 2026 har en note — den opdateres fortsat
         console.log('[AI] Opdaterer Pipedrive-note ' + call.pipedrive_note_id + ' med transskription...');

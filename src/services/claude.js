@@ -10,7 +10,7 @@ const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 // agenten (via Pipedrive-MCP) kan tælle og sammenligne på tværs af
 // kunder og kundegrupper. Ændres skemaet: hæv SCHEMA_VERSION.
 // ============================================================
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2; // v2 (7/10/2026): anledning, primær smerte, konsekvens, beslutning, kontaktens rolle, kundens ord
 
 const strList = (description) => ({ type: 'array', items: { type: 'string' }, description });
 const nullableStr = (description) => ({ type: ['string', 'null'], description });
@@ -49,6 +49,26 @@ const ANALYSIS_TOOL = {
       },
       koebskanaler: strList('Hvordan kunden køber og finder løsninger: fx anbefaling fra kollega, brancheforening, grossist, revisor, Google, messe, LinkedIn, vi ringede op.'),
 
+      // --- Kunderejsen (v2) — ordforrådet fra CMO 01 §3 ---
+      kontakt_rolle: {
+        type: ['string', 'null'],
+        enum: ['ejer/direktør', 'service-/driftschef', 'kontor/administration', 'formand/projektleder', 'IT/økonomi', null],
+        description: 'Rollen hos den person Jeppe talte med. null hvis det ikke fremgår.',
+      },
+      anledning: {
+        type: ['string', 'null'],
+        enum: ['vækst/nye ansatte', 'utilfreds med eller udløb af system', 'fejl eller tab der gjorde ondt', 'ejer- eller lederskifte', 'nysgerrig på AI', 'andet', null],
+        description: 'Hvorfor kunden er interesseret netop nu. null hvis det ikke fremgår.',
+      },
+      primaer_smerte: {
+        type: ['string', 'null'],
+        enum: ['planlægning', 'tilbud', 'timer/løn', 'fakturering', 'dokumentation', 'kommunikation/mail', 'overblik/styring', null],
+        description: 'Den smerte kunden lægger mest vægt på. null hvis ingen er nævnt.',
+      },
+      konsekvens: strList('Hvad problemet koster kunden: timer, kroner, fejl, tabte opgaver, en ansættelse de overvejer. Kun det der siges.'),
+      beslutning: nullableStr('Hvem beslutter, hvem skal overbevises og hvornår — kort. null hvis det ikke fremgår.'),
+      kundens_ord: { type: 'array', items: { type: 'string' }, maxItems: 3, description: '0-3 korte ORDRETTE citater fra kunden, der siger noget skarpt om deres hverdag eller behov (kan bruges i marketing, anonymiseret). Ingen navne.' },
+
       // --- Salgssignaler ---
       udfordringer: strList('Kundens udfordringer/frustrationer i hverdagen.'),
       indvendinger: strList('Indvendinger mod at købe.'),
@@ -67,6 +87,7 @@ const ANALYSIS_TOOL = {
       'summary', 'action_points', 'topics',
       'faggruppe', 'antal_medarbejdere', 'driftssystem', 'regnskabsprogram', 'loenprogram',
       'andre_systemer', 'konkurrenter', 'koebskanaler',
+      'kontakt_rolle', 'anledning', 'primaer_smerte', 'konsekvens', 'beslutning', 'kundens_ord',
       'udfordringer', 'indvendinger', 'koebssignaler', 'naeste_skridt',
       'call_type', 'sentiment', 'call_outcome', 'customer_stage',
       'engagement_score', 'conversion_likelihood', 'ai_coaching_note',
@@ -125,6 +146,16 @@ ${transcription}`;
       andreSystemer: arr(a.andre_systemer),
       konkurrenter: arr(a.konkurrenter),
       koebskanaler: arr(a.koebskanaler),
+    },
+
+    // Kunderejsen (v2)
+    journey: {
+      kontaktRolle: a.kontakt_rolle || null,
+      anledning: a.anledning || null,
+      primaerSmerte: a.primaer_smerte || null,
+      konsekvens: arr(a.konsekvens),
+      beslutning: a.beslutning || null,
+      kundensOrd: arr(a.kundens_ord).slice(0, 3),
     },
 
     // Sales intelligence (samme nøgler som før → call_insights-tabellen)
