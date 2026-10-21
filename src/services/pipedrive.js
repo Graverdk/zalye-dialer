@@ -16,10 +16,13 @@ function isRateLimited(windowMs = 60 * 1000) {
   return Date.now() - lastRateLimitAt < windowMs;
 }
 
-async function findPersonByPhone(rawPhone) {
-  if (!rawPhone) return null;
+// Telefonopslag med udfald: 'found' (person), 'none' (Pipedrive svarede, ingen
+// match) eller 'error' (429, anden HTTP-fejl, netværk). Kun 'none' må caches
+// som "ingen match" — en 429 er ikke et svar på spørgsmålet.
+async function searchPersonByPhone(rawPhone) {
+  if (!rawPhone) return { status: 'none', person: null };
   const digits = rawPhone.replace(/\D/g, '');
-  if (digits.length < 8) return null;
+  if (digits.length < 8) return { status: 'none', person: null };
   const localNumber = digits.slice(-8);
   // exact_match: uden den laver Pipedrive delvist match på cifferstrengen, og
   // så kan et vilkårligt nummer der INDEHOLDER de otte cifre komme retur.
@@ -30,7 +33,7 @@ async function findPersonByPhone(rawPhone) {
     if (!res.ok) {
       if (res.status === 429) lastRateLimitAt = Date.now();
       console.error(`[Pipedrive] Søge-fejl ${res.status} for ${localNumber}: ${JSON.stringify(data)}`);
-      return null;
+      return { status: 'error', person: null, rateLimited: res.status === 429 };
     }
     const items = data?.data?.items || [];
     // Verificér at den fundne person rent faktisk HAR det nummer vi ringede til.
@@ -43,18 +46,22 @@ async function findPersonByPhone(rawPhone) {
     );
     if (hit) {
       console.log(`[Pipedrive] Fandt kontakt for ${localNumber} (fra ${digits}) -> personId ${hit.item.id}`);
-      return hit.item;
+      return { status: 'found', person: hit.item };
     }
     if (items.length > 0) {
       console.warn(`[Pipedrive] ${items.length} træf for ${localNumber}, men ingen med et matchende nummer — afvist for at undgå fejlmatch`);
-      return null;
+      return { status: 'none', person: null };
     }
     console.log(`[Pipedrive] Ingen kontakt fundet for ${localNumber} (fra ${digits})`);
-    return null;
+    return { status: 'none', person: null };
   } catch (e) {
     console.error(`[Pipedrive] Netværksfejl ved søgning på ${localNumber}: ${e.message}`);
-    return null;
+    return { status: 'error', person: null };
   }
+}
+
+async function findPersonByPhone(rawPhone) {
+  return (await searchPersonByPhone(rawPhone)).person;
 }
 
 async function getPersonById(personId) {
@@ -431,6 +438,7 @@ async function createPerson({ name, phone, orgName }) {
 module.exports = {
   isRateLimited,
   findPersonByPhone,
+  searchPersonByPhone,
   getPersonById,
   getPersonWithDeals,
   createCallNote,
