@@ -20,9 +20,10 @@ async function findPersonByPhone(rawPhone) {
   const digits = rawPhone.replace(/\D/g, '');
   if (digits.length < 8) return null;
   const localNumber = digits.slice(-8);
-  // exact_match: uden den laver Pipedrive delvist match på cifferstrengen, og
-  // så kan et vilkårligt nummer der INDEHOLDER de otte cifre komme retur.
-  const url = `${BASE}/persons/search?term=${encodeURIComponent(localNumber)}&fields=phone&exact_match=true`;
+  // Ikke exact_match: så finder Pipedrive kun numre gemt som præcis de otte
+  // cifre, og alle numre gemt med +45 bliver aldrig fundet. Delvise træf
+  // sorteres fra nedenfor, hvor de sidste otte cifre skal passe.
+  const url = `${BASE}/persons/search?term=${encodeURIComponent(localNumber)}&fields=phone`;
   try {
     const res = await fetch(url, { headers: GET_HEADERS });
     const data = await res.json();
