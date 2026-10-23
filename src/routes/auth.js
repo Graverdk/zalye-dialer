@@ -24,6 +24,11 @@ router.post('/session', (req, res) => {
 router.get('/callback', async (req, res) => {
   const { code } = req.query;
 
+  // Pipedrive-appen er slettet 23/10 — uden client id/secret er der intet at installere
+  if (!config.pipedrive.clientId || !config.pipedrive.clientSecret) {
+    return res.status(410).send('Pipedrive-appen er fjernet');
+  }
+
   if (!code) {
     return res.status(400).send('Manglende authorization code');
   }

@@ -13,7 +13,9 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 
-const JWT_SECRET = config.security.panelJwtSecret || config.pipedrive.clientSecret;
+// Uden en nøgle (Pipedrive-appen er slettet 23/10) er panel-adgang slået fra:
+// kun ADMIN_SECRET giver adgang. Et tomt secret må aldrig bruges til JWT.
+const JWT_SECRET = config.security.panelJwtSecret || config.pipedrive.clientSecret || '';
 const SESSION_TTL_HOURS = 12;
 
 function extractToken(req) {
@@ -31,10 +33,12 @@ function isAdminRequest(req) {
 }
 
 function verifyToken(token) {
+  if (!JWT_SECRET) throw new Error('Panel-adgang er slået fra (ingen Pipedrive-app)');
   return jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
 }
 
 function signSessionToken() {
+  if (!JWT_SECRET) throw new Error('Panel-adgang er slået fra (ingen Pipedrive-app)');
   return jwt.sign({ scope: 'panel' }, JWT_SECRET, { expiresIn: SESSION_TTL_HOURS + 'h' });
 }
 

@@ -33,8 +33,10 @@ module.exports = {
 
   pipedrive: {
     apiToken: required('PIPEDRIVE_API_TOKEN'),
-    clientId: required('PIPEDRIVE_CLIENT_ID'),
-    clientSecret: required('PIPEDRIVE_CLIENT_SECRET'),
+    // Kun til den gamle Pipedrive-app (panel i Pipedrive + OAuth-installation).
+    // Appen er slettet 23/10, så de er valgfrie. Dataflowet bruger kun apiToken.
+    clientId: optional('PIPEDRIVE_CLIENT_ID', ''),
+    clientSecret: optional('PIPEDRIVE_CLIENT_SECRET', ''),
     domain: optional('PIPEDRIVE_COMPANY_DOMAIN', 'app'),
     get baseUrl() {
       return `https://${this.domain}.pipedrive.com/api/v1`;

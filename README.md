@@ -24,3 +24,9 @@
 - 401 fra Pipedrive eller Relatel i to kørsler i træk giver én alarm pr. time til `ALERT_WEBHOOK_URL`
   (`services/alerts.js`). Uden URL står alarmen kun i loggen som `[Alarm] …`.
 - Tests: `npm test` (node:test). Dækker TTL, at 401/429 ikke caches, genstart, loftet, alarmen og markøren.
+
+## Pipedrive-appen er fjernet (23/10/2026)
+- Jeppe har slettet dialer-appen i Pipedrive Developer Hub. `PIPEDRIVE_CLIENT_ID` og `PIPEDRIVE_CLIENT_SECRET`
+  er derfor valgfrie og kan slettes i Railway. Dataflowet (Relatel → Pipedrive) bruger kun `PIPEDRIVE_API_TOKEN`.
+- Uden dem er panel-adgangen (`/api/calls`, `/api/messages`, `/auth/session`) kun åben med `ADMIN_SECRET`,
+  og `/auth/callback` svarer 410.
