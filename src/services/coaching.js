@@ -13,7 +13,7 @@ const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 // kan tælle mønstre på tværs af kald. Ændres labels/skema: hæv
 // COACHING_SCHEMA_VERSION og ret parseren i zalye-salgscoach (insights.js).
 // ============================================================
-const COACHING_SCHEMA_VERSION = 1;
+const COACHING_SCHEMA_VERSION = 2; // v2: Spilleregler (de ti sælgere i playbooken)
 
 const PLAYBOOK_PATH = path.join(__dirname, '..', 'coaching', 'playbook.md');
 function loadPlaybook() {
@@ -26,6 +26,7 @@ const BLOK_LABEL = {
   konsekvens: 'Konsekvens', beslutning: 'Beslutning', naeste_skridt: 'Næste skridt',
 };
 const BLOK_STATUS = ['dækket', 'delvist', 'mangler', 'ikke relevant'];
+const MESTRE = ['Rackham', 'Voss', 'Dixon og Adamson', 'Keenan', 'Sandler', 'Blount', 'Braun', 'Hormozi', 'Konrath', 'Weinberg'];
 const VOSS = ['spejling', 'labeling', 'kalibreret spørgsmål', 'nej-spørgsmål', 'anklage-audit', 'opsummering', 'taktisk pause'];
 
 // ------------------------------------------------------------
@@ -96,6 +97,21 @@ const COACHING_TOOL = {
           required: ['hvad', 'hvorfor', 'sig_fx'],
         },
       },
+      spilleregler: {
+        type: 'array',
+        maxItems: 3,
+        description: 'De 1-3 spilleregler fra de ti sælgere i playbooken, der betød mest i netop dette kald. Både dem han fulgte, og dem han brød. Vigtigste først.',
+        items: {
+          type: 'object',
+          properties: {
+            saelger: { type: 'string', enum: MESTRE },
+            fulgt: { type: 'string', enum: ['fulgt', 'brudt'] },
+            hvad: { type: 'string', description: 'Hvad han gjorde eller ikke gjorde, med kort citat. Én sætning.' },
+            naeste_gang: { type: 'string', description: 'Hvad han gør næste gang efter den regel, gerne som replik. Én sætning.' },
+          },
+          required: ['saelger', 'fulgt', 'hvad', 'naeste_gang'],
+        },
+      },
       vendepunkt: {
         type: ['string', 'null'],
         description: 'Det ene øjeblik hvor kaldet kunne være gået længere: kort citat af hvad der blev sagt + hvad han kunne have sagt i stedet. null hvis intet.',
@@ -106,7 +122,7 @@ const COACHING_TOOL = {
       karakter: { type: 'integer', minimum: 1, maximum: 10, description: 'Samlet karakter for kaldet ift. dets formål.' },
     },
     required: ['moedetype', 'formaal', 'exit_naaet', 'exit_begrundelse', 'udfald', 'blokke', 'voss_brugt', 'styrker',
-      'mere_vaegt_paa', 'vendepunkt', 'bedste_replik', 'oevelse', 'moenster', 'karakter'],
+      'mere_vaegt_paa', 'spilleregler', 'vendepunkt', 'bedste_replik', 'oevelse', 'moenster', 'karakter'],
   },
 };
 
@@ -138,11 +154,12 @@ async function coachCall({ transcription, direction = 'outgoing', durationSec, a
 
 Din coaching er ærlig, konkret og kort. Du roser kun det, der faktisk virkede, og du siger direkte, hvad der kostede kaldet noget. Alt skal kunne bruges i næste kald: brug citater fra transskriptet og giv replikker på naturligt dansk, som en håndværker ville sige dem. Ingen floskler, ingen engelske salgsord.
 
-Mål kaldet på: playbookens regler, de 6 blokke og exit-kriteriet for netop denne type kald, Voss-teknikkerne og målgruppens måde at købe på. Vurdér kaldet ud fra dets formål: et genopkald til en vundet kunde skal give en opstartsdato, ikke en ny behovsafdækning; et kald hvor en kollega tog telefonen ("Omstilling") vurderes kun på at komme igennem til beslutningstageren.
+Mål kaldet på: playbookens regler, de 6 blokke og exit-kriteriet for netop denne type kald, Voss-teknikkerne, spillereglerne fra de ti bedste sælgere og målgruppens måde at købe på. Vurdér kaldet ud fra dets formål: et genopkald til en vundet kunde skal give en opstartsdato, ikke en ny behovsafdækning; et kald hvor en kollega tog telefonen ("Omstilling") vurderes kun på at komme igennem til beslutningstageren.
 
 Registrér med værktøjet registrer_coaching. Regler:
 - Kun det der står i transskriptet. Diariseringen (Sælger/Kunde) kan være upræcis — tag højde for det.
 - "mere_vaegt_paa": de 1-3 ting der ville have flyttet kaldet mest. Vigtigste først.
+- "spilleregler": vælg de 1-3 sælgere fra playbooken, hvis regel betød mest i netop dette kald. Nævn dem ved navn, og citér aldrig deres bøger.
 - "moenster": brug historikken. Går det samme hul igen, så sig det med antal.
 - Skriv på korrekt dansk med æ, ø, å. Tal til Jeppe i du-form.
 
@@ -181,6 +198,7 @@ function buildCoachingBlock(c) {
   const none = 'ingen';
   const blokke = BLOKKE.map((b) => `${BLOK_LABEL[b]} ${(c.blokke && c.blokke[b]) || 'mangler'}`).join('; ');
   const vægt = (c.mere_vaegt_paa || []).map((m) => `${clean(m.hvad)} — ${clean(m.hvorfor)} Sig fx: "${clean(m.sig_fx).replace(/^"|"$/g, '')}"`);
+  const regler = (c.spilleregler || []).map((r) => `${clean(r.saelger)} (${clean(r.fulgt)}): ${clean(r.hvad)} — ${clean(r.naeste_gang)}`);
   const lines = [
     `Mødetype: ${clean(c.moedetype)}  ·  Udfald: ${clean(c.udfald)}  ·  Exit nået: ${clean(c.exit_naaet)}  ·  Karakter: ${c.karakter || '?'}/10`,
     `Formål: ${clean(c.formaal)}`,
@@ -190,6 +208,7 @@ function buildCoachingBlock(c) {
     `Voss brugt: ${(c.voss_brugt || []).length ? c.voss_brugt.join('; ') : none}`,
     `Styrker: ${(c.styrker || []).length ? c.styrker.map(clean).join('; ') : none}`,
     `Mere vægt på: ${vægt.length ? vægt.join('; ') : none}`,
+    `Spilleregler: ${regler.length ? regler.join('; ') : none}`,
     `Vendepunkt: ${c.vendepunkt ? clean(c.vendepunkt) : none}`,
     `Øvelse: ${clean(c.oevelse)}`,
     `Mønster: ${c.moenster ? clean(c.moenster) : none}`,
@@ -198,4 +217,4 @@ function buildCoachingBlock(c) {
   return `### Coaching (skema v${c.schemaVersion || COACHING_SCHEMA_VERSION})\n${lines.map((l) => `- ${l}`).join('\n')}\n\n`;
 }
 
-module.exports = { coachCall, buildCoachingBlock, talkStats, summarizeHistory, COACHING_SCHEMA_VERSION };
+module.exports = { coachCall, buildCoachingBlock, talkStats, summarizeHistory, COACHING_SCHEMA_VERSION, MESTRE };

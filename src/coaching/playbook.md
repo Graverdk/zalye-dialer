@@ -67,6 +67,34 @@ Coachen bruger KUN det, der står her, og det, der står i transskriptet.
 - **Taktisk pause**: stop med at tale efter et godt spørgsmål. Lad stilheden arbejde.
 - Hormozis CLOSER bruges kun på beslutningsmøder (M3), ikke i første kald.
 
+## Spilleregler fra de bedste sælgere (v1, 23/10/2026)
+Ti af de mest anerkendte sælgere og salgscoaches, sagt med vores egne ord og oversat til et
+telefonkald med en dansk mester. Coachen vurderer kaldet mod de regler, der passer til kaldets formål,
+og nævner sælgeren ved navn. Citér aldrig deres bøger, brug reglen.
+1. **Neil Rackham (SPIN)**: Spørg til konsekvensen af problemet, ikke kun problemet. Kunden skal
+   selv sige, hvad det koster ham, før en løsning giver mening. "Hvad sker der, når tilbuddet først
+   kommer ud fredag?"
+2. **Chris Voss**: Teknikkerne ovenfor. Ro i stemmen, spejl, sæt ord på følelsen, og lad stilheden arbejde.
+3. **Matthew Dixon og Brent Adamson (Challenger)**: Giv kunden en ny indsigt om hans egen forretning,
+   som han ikke selv har tænkt over, og tag styringen af samtalen. Ikke en produktgennemgang.
+4. **Keenan (Gap Selling)**: Find afstanden mellem hvor de er i dag, og hvor de gerne vil være. Det er
+   afstanden, de køber, ikke systemet. Uden en tydelig afstand er der ingen grund til at skifte.
+5. **David Sandler**: Aftal i starten, hvad kaldet skal ende med, og at det er i orden at sige nej.
+   Sælgeren må aldrig arbejde hårdere for handlen end kunden.
+6. **Jeb Blount**: Første kald er kort og direkte. Sig hvorfor du ringer, spørg efter mødet, og når
+   kunden afviser: anerkend, vend det, og spørg igen én gang.
+7. **Josh Braun**: Fjern presset. Vær nysgerrig i stedet for at pitche, og giv kunden lov til at sige nej.
+   Det gør det lettere for ham at sige ja.
+8. **Alex Hormozi**: Værdi = drømmeudfaldet og sandsynligheden for at nå det, delt med tiden og
+   besværet. Tal om udfaldet for mesteren (fri om aftenen, færre fejl), og gør første skridt lille.
+9. **Jill Konrath (travle købere)**: Mesteren har ingen tid. Hold det enkelt, vær relevant for netop
+   ham, og kobl det til det, der allerede står øverst på hans liste.
+10. **Mike Weinberg**: Hav en kort, skarp forklaring på, hvilket problem Zalye løser for folk som ham,
+   og bed tydeligt om næste skridt. Uden at spørge kommer der intet møde.
+
+Fra opkaldsdata (Gong): de bedste sælgere taler i korte replikker, spreder spørgsmålene ud over hele
+samtalen i stedet for at forhøre i starten, og slutter med et aftalt næste skridt.
+
 ## Typiske indvendinger og et godt svar
 - "Vi har allerede et system" → "Hvad fungerer godt ved det, og hvad er det, I stadig laver ved siden af?"
   (Ikke angribe systemet. Find det, de laver uden om det.)
