@@ -1,5 +1,7 @@
 const fetch = require('node-fetch');
 const config = require('../config');
+const runStats = require('./runStats');
+const alerts = require('./alerts');
 
 const BASE = config.relatel.baseUrl;
 
@@ -12,13 +14,24 @@ function headers() {
 }
 
 async function request(method, path, body = null) {
+  const stats = runStats.current();
+  // Har Relatel afvist nøglen tidligere i kørslen, prøver vi ikke igen før næste kørsel
+  if (stats.stopRelatel) {
+    throw new Error(`Relatel afviste nøglen (401) tidligere i kørslen — springer ${path.split('?')[0]} over`);
+  }
   const opts = { method, headers: headers() };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(`${BASE}${path}`, opts);
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
+    stats.relatelErrors++;
+    if (res.status === 401) {
+      stats.stopRelatel = true;
+      alerts.noteAuthFailure('relatel');
+    }
     throw new Error(`Relatel API fejl ${res.status} paa ${path}: ${JSON.stringify(json)}`);
   }
+  alerts.noteSuccess('relatel');
   return json;
 }
 
@@ -58,7 +71,15 @@ async function downloadRecording(url) {
   const res = await fetch(url, {
     headers: { 'Authorization': `Bearer ${config.relatel.accessToken}` },
   });
-  if (!res.ok) throw new Error(`Kunne ikke downloade optagelse: HTTP ${res.status}`);
+  if (!res.ok) {
+    const stats = runStats.current();
+    stats.relatelErrors++;
+    if (res.status === 401) {
+      stats.stopRelatel = true;
+      alerts.noteAuthFailure('relatel');
+    }
+    throw new Error(`Kunne ikke downloade optagelse: HTTP ${res.status}`);
+  }
   const buffer = await res.buffer();
   return { buffer, contentType: res.headers.get('content-type') || 'audio/mpeg' };
 }

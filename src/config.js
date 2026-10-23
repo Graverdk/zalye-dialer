@@ -59,5 +59,12 @@ module.exports = {
     relatelWebhookSigningSecret: optional('RELATEL_WEBHOOK_SECRET', ''),
   },
 
+  alerts: {
+    // Hvor fejlalarmer sendes hen (Teams-workflow eller Make-webhook, der mailer
+    // videre). Hemmelig: URL'en logges aldrig. Tom = alarmen står kun i loggen.
+    webhookUrl: optional('ALERT_WEBHOOK_URL', ''),
+    email: optional('ALERT_EMAIL', 'jg@zalye.dk'),
+  },
+
   pollIntervalSeconds: parseInt(optional('POLL_INTERVAL_SECONDS', '30')),
 };

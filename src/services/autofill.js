@@ -1,4 +1,4 @@
-const fetch = require('node-fetch');
+const { fetch } = require('./pipedriveGuard'); // pause ved 401/429 som resten af Pipedrive-kaldene
 const config = require('../config');
 
 // ============================================================

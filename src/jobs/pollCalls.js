@@ -8,28 +8,21 @@ const { transcribe, buildDiarizedTranscript } = require('../services/transcripti
 const claude = require('../services/claude');
 const coaching = require('../services/coaching');
 const { autofillFromCall } = require('../services/autofill');
+const runStats = require('../services/runStats');
+const alerts = require('../services/alerts');
+const { createPhoneLookupCache } = require('../services/phoneLookupCache');
 
-// Telefonopslag i Pipedrive caches i DB, nøglet på de sidste 8 cifre (som i
-// findPersonByPhone), så cachen overlever genstart og deploy. Før lå
-// "ingen match" kun 60 sek i hukommelsen, mens transskriptionsjobbet kører
-// hvert 2. min — hvert umatchet opkald gav derfor et Pipedrive-kald hvert
-// 2. minut i op til 7 dage (set 21/10). Loftet deles med lead-hubben og MCP'en.
-// Positive match: 10 min. "Ingen match": hvert 15. min den første time efter
-// opkaldet (et lead oprettet lige efter skal stadig findes hurtigt), derefter
-// højst én gang i døgnet.
-const POSITIVE_TTL = 10 * 60 * 1000;
-const NEGATIVE_FRESH_WINDOW_MS = 60 * 60 * 1000;
-const NEGATIVE_FRESH_RECHECK_MS = 15 * 60 * 1000;
-const NEGATIVE_RECHECK_MS = 24 * 60 * 60 * 1000;
-const CACHE_HIT_LOG_MS = 60 * 60 * 1000;
-db.exec(`CREATE TABLE IF NOT EXISTS phone_lookups (
-  number_last8   TEXT PRIMARY KEY,
-  person_id      INTEGER,
-  latest_deal_id INTEGER,
-  checked_at     INTEGER NOT NULL,
-  first_miss_at  INTEGER
-)`);
-const cacheHitLoggedAt = new Map();
+// Telefonopslag i Pipedrive caches i SQLite (phone_lookups, sidste 8 cifre),
+// så cachen overlever genstart og deploy. "Ingen match" gælder i 24 timer,
+// 401/429 caches aldrig, og højst 25 opslag pr. kørsel. Se
+// services/phoneLookupCache.js. Før gav et umatchet opkald et Pipedrive-kald
+// hvert 2. minut i op til 7 dage (set 21/10 og 22–23/10).
+const phoneCache = createPhoneLookupCache({
+  db,
+  search: (phone) => pipedrive.searchPersonByPhone(phone),
+  getDeals: (personId) => pipedrive.getPersonWithDeals(personId),
+  isPaused: () => pipedrive.isRateLimited(),
+});
 
 // Berigelse af Relatel-kontakter: hvornår hver kontakt sidst blev tjekket
 // gemmes i DB (overlever genstart — før startede hver deploy en fuld scanning
@@ -65,61 +58,24 @@ function withLock(name, fn) {
     }
     running = true;
     try {
-      return await fn(...args);
+      // Én kørsel: tællere for Pipedrive-kald, cache og fejl, én logline til
+      // sidst og tjek af 401-alarmen (services/runStats.js, services/alerts.js)
+      return await runStats.run(name, () => fn(...args), { onEnd: (stats) => alerts.endRun(stats) });
     } finally {
       running = false;
     }
   };
 }
 
-// eventAt: hvornår opkaldet/SMS'en skete (ms eller ISO). Et nyt opkald fra et
-// nummer uden match åbner det hurtige gen-tjek igen.
-async function lookupPerson(phoneNumber, { eventAt } = {}) {
-  const last8 = String(phoneNumber || '').replace(/\D/g, '').slice(-8);
-  if (last8.length < 8) return null;
-  const now = Date.now();
-  const row = db.prepare('SELECT * FROM phone_lookups WHERE number_last8 = ?').get(last8);
-
-  if (row && row.person_id) {
-    if (now - row.checked_at < POSITIVE_TTL) {
-      return { personId: row.person_id, latestDealId: row.latest_deal_id };
-    }
-  } else if (row) {
-    const eventMs = typeof eventAt === 'number' ? eventAt : Date.parse(eventAt || '') || 0;
-    const anchor = Math.max(row.first_miss_at || row.checked_at, eventMs);
-    const recheck = now - anchor < NEGATIVE_FRESH_WINDOW_MS ? NEGATIVE_FRESH_RECHECK_MS : NEGATIVE_RECHECK_MS;
-    if (now - row.checked_at < recheck) {
-      if (now - (cacheHitLoggedAt.get(last8) || 0) >= CACHE_HIT_LOG_MS) {
-        cacheHitLoggedAt.set(last8, now);
-        const ago = now - row.checked_at;
-        const agoText = ago < 60 * 60 * 1000 ? Math.round(ago / 60000) + ' min' : Math.round(ago / 3600000) + ' t';
-        console.log('[Pipedrive] Cache: ingen match for …' + last8.slice(-4) + ' (tjekket for ' + agoText + ' siden) — springer opslag over');
-      }
-      return null;
-    }
-  }
-
-  // Pipedrive har lige sagt 429 — spørg ikke igen før vinduet er ovre
-  if (pipedrive.isRateLimited()) return null;
-
-  const result = await pipedrive.searchPersonByPhone(phoneNumber);
-  if (result.status === 'error') return null; // 429/netværk er ikke "ingen match" — caches ikke
-  if (result.status === 'none') {
-    db.prepare(`INSERT INTO phone_lookups (number_last8, person_id, latest_deal_id, checked_at, first_miss_at)
-      VALUES (?, NULL, NULL, ?, ?)
-      ON CONFLICT(number_last8) DO UPDATE SET
-        person_id = NULL, latest_deal_id = NULL, checked_at = excluded.checked_at,
-        first_miss_at = COALESCE(phone_lookups.first_miss_at, excluded.first_miss_at)`).run(last8, now, now);
-    return null;
-  }
-  const { latestDealId } = await pipedrive.getPersonWithDeals(result.person.id);
-  db.prepare(`INSERT INTO phone_lookups (number_last8, person_id, latest_deal_id, checked_at, first_miss_at)
-    VALUES (?, ?, ?, ?, NULL)
-    ON CONFLICT(number_last8) DO UPDATE SET
-      person_id = excluded.person_id, latest_deal_id = excluded.latest_deal_id,
-      checked_at = excluded.checked_at, first_miss_at = NULL`).run(last8, result.person.id, latestDealId, now);
-  return { personId: result.person.id, latestDealId };
+// Returnerer { personId, latestDealId } ved match, null ved "ingen match" og
+// { deferred: true } når opslaget er udskudt (Pipedrive på pause, fejl eller
+// loftet på 25 opslag i kørslen). Udskudte opslag prøves igen næste kørsel.
+async function lookupPerson(phoneNumber) {
+  return phoneCache.lookup(phoneNumber);
 }
+
+// Relatel giver 50 opkald som standard. Efter nedetid kan der være flere.
+const POLL_LIMIT = 200;
 
 async function pollNewCalls() {
   // Default ved første kørsel: 24 timer tilbage (sikkerhedsnet hvis DB-volumet
@@ -129,88 +85,117 @@ async function pollNewCalls() {
   // mellem query og "nu", falde i et hul og aldrig blive hentet
   const checkTime = new Date().toISOString();
   console.log('[Poll] Henter opkald afsluttet efter: ' + lastChecked);
-  const rawCalls = await relatel.getCalls({ endedAfter: lastChecked });
+  const rawCalls = await relatel.getCalls({ endedAfter: lastChecked, limit: POLL_LIMIT });
   console.log('[Poll] Fandt ' + rawCalls.length + ' afsluttede opkald');
-  state.set('last_call_check', checkTime);
+  if (rawCalls.length >= POLL_LIMIT) {
+    console.warn('[Poll] Relatel returnerede ' + POLL_LIMIT + ' opkald (loftet) — der kan være flere');
+  }
 
-  for (const rc of rawCalls) {
-    const nc = relatel.normalizeCall(rc);
-    if (!nc.phone_number) continue;
+  // Opkald, der ikke blev færdige, fordi Pipedrive holdt pause eller loftet på
+  // 25 opslag var nået, holder markøren tilbage, så de hentes igen næste gang.
+  // Før rykkede markøren altid frem, og opkald uden optagelse kom aldrig i Pipedrive.
+  let holdFrom = null;
+  const holdCall = (nc) => {
+    const ms = Date.parse(nc.ended_at || '');
+    if (ms && (!holdFrom || ms < holdFrom)) holdFrom = ms;
+  };
 
-    if (!nc.recording_url && nc.relatel_uuid) {
-      try {
-        const fullCall = await relatel.getCall(nc.relatel_uuid);
-        if (fullCall) {
-          const detailed = relatel.normalizeCall(fullCall);
-          if (detailed.recording_url) {
-            nc.recording_url = detailed.recording_url;
-            console.log('[Poll] Optagelse fundet via enkelt-opkald for ' + nc.relatel_uuid);
-          } else {
-            console.log('[Poll] Ingen optagelse for ' + nc.relatel_uuid);
+  try {
+    for (const rc of rawCalls) {
+      const nc = relatel.normalizeCall(rc);
+      if (!nc.phone_number) continue;
+
+      // Allerede i Pipedrive eller med optagelse: spring enkelt-opslaget i Relatel over
+      // (vigtigt når markøren holdes tilbage, og de samme opkald hentes igen)
+      const known = calls.getByUuid(nc.relatel_uuid);
+      const knownDone = known && (known.recording_url || known.pipedrive_activity_id || known.pipedrive_note_id);
+      if (!nc.recording_url && nc.relatel_uuid && !knownDone) {
+        try {
+          const fullCall = await relatel.getCall(nc.relatel_uuid);
+          if (fullCall) {
+            const detailed = relatel.normalizeCall(fullCall);
+            if (detailed.recording_url) {
+              nc.recording_url = detailed.recording_url;
+              console.log('[Poll] Optagelse fundet via enkelt-opkald for ' + nc.relatel_uuid);
+            } else {
+              console.log('[Poll] Ingen optagelse for ' + nc.relatel_uuid);
+            }
           }
+        } catch (e) {
+          console.error('[Poll] Fejl ved enkelt-opkald:', e.message);
         }
-      } catch (e) {
-        console.error('[Poll] Fejl ved enkelt-opkald:', e.message);
       }
-    }
 
-    calls.upsert(nc);
+      calls.upsert(nc);
 
-    // Match evt. midlertidig 'pending-…'-række fra click-to-call:
-    // overfør person/deal-koblingen (vi VED hvilken side der blev ringet fra
-    // — bedre end gæt via "seneste åbne deal") og slet temp-rækken
-    if (nc.direction === 'outgoing') {
-      const temp = db.prepare(`
-        SELECT * FROM calls
-        WHERE relatel_uuid LIKE 'pending-%'
-          AND substr(phone_number, -8) = substr(?, -8)
-          AND created_at > strftime('%s', 'now') - 3600
-        ORDER BY created_at DESC LIMIT 1
-      `).get(nc.phone_number);
-      if (temp) {
-        if (temp.pipedrive_person_id || temp.pipedrive_deal_id) {
-          db.prepare(`
-            UPDATE calls SET
-              pipedrive_person_id = COALESCE(pipedrive_person_id, ?),
-              pipedrive_deal_id   = COALESCE(pipedrive_deal_id, ?)
-            WHERE relatel_uuid = ?
-          `).run(temp.pipedrive_person_id, temp.pipedrive_deal_id, nc.relatel_uuid);
-          console.log('[Poll] Click-to-call-kobling overført til ' + nc.relatel_uuid);
+      // Match evt. midlertidig 'pending-…'-række fra click-to-call:
+      // overfør person/deal-koblingen (vi VED hvilken side der blev ringet fra
+      // — bedre end gæt via "seneste åbne deal") og slet temp-rækken
+      if (nc.direction === 'outgoing') {
+        const temp = db.prepare(`
+          SELECT * FROM calls
+          WHERE relatel_uuid LIKE 'pending-%'
+            AND substr(phone_number, -8) = substr(?, -8)
+            AND created_at > strftime('%s', 'now') - 3600
+          ORDER BY created_at DESC LIMIT 1
+        `).get(nc.phone_number);
+        if (temp) {
+          if (temp.pipedrive_person_id || temp.pipedrive_deal_id) {
+            db.prepare(`
+              UPDATE calls SET
+                pipedrive_person_id = COALESCE(pipedrive_person_id, ?),
+                pipedrive_deal_id   = COALESCE(pipedrive_deal_id, ?)
+              WHERE relatel_uuid = ?
+            `).run(temp.pipedrive_person_id, temp.pipedrive_deal_id, nc.relatel_uuid);
+            console.log('[Poll] Click-to-call-kobling overført til ' + nc.relatel_uuid);
+            // Nummeret er nu koblet til en person — ryd evt. "ingen match" i cachen
+            if (temp.pipedrive_person_id) phoneCache.remember(nc.phone_number, temp.pipedrive_person_id, temp.pipedrive_deal_id);
+          }
+          db.prepare("DELETE FROM calls WHERE relatel_uuid = ?").run(temp.relatel_uuid);
         }
-        db.prepare("DELETE FROM calls WHERE relatel_uuid = ?").run(temp.relatel_uuid);
+      }
+
+      const existing = calls.getByUuid(nc.relatel_uuid);
+      if (existing && (existing.pipedrive_note_id || existing.pipedrive_activity_id)) continue;
+
+      // Brug eksisterende kobling (fx fra click-to-call) før telefon-opslag
+      let personId = (existing && existing.pipedrive_person_id) || null;
+      let dealId = (existing && existing.pipedrive_deal_id) || null;
+      if (!personId) {
+        const lookup = await lookupPerson(nc.phone_number);
+        if (lookup && lookup.personId) {
+          personId = lookup.personId;
+          dealId = dealId || lookup.latestDealId;
+        } else if (lookup && lookup.deferred) {
+          holdCall(nc);
+        }
+      }
+      if (!personId) continue;
+
+      const activityId = await pipedrive.createCallActivity({
+        personId,
+        dealId,
+        callData: {
+          direction: nc.direction,
+          phoneNumber: nc.phone_number,
+          startedAt: nc.started_at,
+          durationSec: nc.duration_sec,
+        },
+      });
+      if (activityId) {
+        db.prepare('UPDATE calls SET pipedrive_activity_id = ?, pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
+          .run(activityId, personId, dealId, nc.relatel_uuid);
+        console.log('[Poll] Opkaldsaktivitet oprettet (aktivitet ' + activityId + ') for ' + nc.phone_number);
+      } else if (pipedrive.isRateLimited()) {
+        holdCall(nc);
       }
     }
-
-    const existing = calls.getByUuid(nc.relatel_uuid);
-    if (existing && (existing.pipedrive_note_id || existing.pipedrive_activity_id)) continue;
-
-    // Brug eksisterende kobling (fx fra click-to-call) før telefon-opslag
-    let personId = (existing && existing.pipedrive_person_id) || null;
-    let dealId = (existing && existing.pipedrive_deal_id) || null;
-    if (!personId) {
-      const lookup = await lookupPerson(nc.phone_number, { eventAt: nc.ended_at });
-      if (lookup && lookup.personId) {
-        personId = lookup.personId;
-        dealId = dealId || lookup.latestDealId;
-      }
-    }
-    if (!personId) continue;
-
-    const activityId = await pipedrive.createCallActivity({
-      personId,
-      dealId,
-      callData: {
-        direction: nc.direction,
-        phoneNumber: nc.phone_number,
-        startedAt: nc.started_at,
-        durationSec: nc.duration_sec,
-      },
-    });
-    if (activityId) {
-      db.prepare('UPDATE calls SET pipedrive_activity_id = ?, pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
-        .run(activityId, personId, dealId, nc.relatel_uuid);
-      console.log('[Poll] Opkaldsaktivitet oprettet (aktivitet ' + activityId + ') for ' + nc.phone_number);
-    }
+  } finally {
+    const marker = holdFrom
+      ? new Date(Math.min(holdFrom - 1000, Date.parse(checkTime))).toISOString()
+      : checkTime;
+    state.set('last_call_check', marker);
+    if (holdFrom) console.log('[Poll] Opkald venter på Pipedrive — markøren holdes på ' + marker);
   }
 }
 
@@ -245,7 +230,7 @@ async function matchUnmatchedPendingCalls() {
       console.warn('[Match] Pipedrive rate limit — stopper kørslen');
       break;
     }
-    const lookup = await lookupPerson(c.phone_number, { eventAt: c.ended_at });
+    const lookup = await lookupPerson(c.phone_number);
     if (lookup && lookup.personId) {
       db.prepare(`
         UPDATE calls SET
@@ -379,7 +364,7 @@ async function processTranscriptions() {
       let personId = call.pipedrive_person_id;
       let dealId = call.pipedrive_deal_id;
       if (!personId && !call.pipedrive_note_id && !call.pipedrive_activity_id && call.phone_number) {
-        const lookup = await lookupPerson(call.phone_number, { eventAt: call.ended_at });
+        const lookup = await lookupPerson(call.phone_number);
         if (lookup && lookup.personId) {
           personId = lookup.personId;
           dealId = lookup.latestDealId || dealId;
@@ -553,7 +538,7 @@ async function backfillCalls(days = 7) {
     let personId = existing.pipedrive_person_id;
     let dealId = existing.pipedrive_deal_id;
     if (!personId) {
-      const lookup = await lookupPerson(nc.phone_number, { eventAt: nc.ended_at });
+      const lookup = await lookupPerson(nc.phone_number);
       if (lookup && lookup.personId) {
         personId = lookup.personId;
         dealId = lookup.latestDealId || null;
@@ -732,7 +717,7 @@ async function linkUnmatchedMessages() {
     let personId = m.pipedrive_person_id;
     let dealId = m.pipedrive_deal_id;
     if (!personId) {
-      const lookup = await lookupPerson(m.phone_number, { eventAt: m.sent_at });
+      const lookup = await lookupPerson(m.phone_number);
       if (!lookup || !lookup.personId) continue;
       personId = lookup.personId;
       dealId = lookup.latestDealId;
