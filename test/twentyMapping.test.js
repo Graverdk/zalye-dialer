@@ -57,7 +57,10 @@ test('rolle, anledning, branche og timer pr. uge', () => {
   assert.strictEqual(M.anledning('andet'), null);
   assert.strictEqual(M.branche('Tømrer'), 'TOEMRER_SNEDKER');
   assert.strictEqual(M.branche('anlægsgartner'), 'ANLAEG_HAVE');
-  assert.strictEqual(M.branche('tagdækker'), null, 'fag uden for planens liste springes over');
+  assert.strictEqual(M.branche('tagdækker'), 'TAG');
+  assert.strictEqual(M.branche('Vinduespudser'), 'VINDUESPOLERING');
+  assert.strictEqual(M.branche('blikkenslager'), 'BLIK');
+  assert.strictEqual(M.branche('rumfart'), null, 'ukendt fag springes over (aldrig ANDET)');
   assert.strictEqual(M.timerPrUge(['Bruger 10 timer om ugen på tilbud']), 10);
   assert.strictEqual(M.timerPrUge(['koster dyrt']), null);
 });
@@ -69,4 +72,32 @@ test('DEMO_BOOKET må kun nås fra tidligere åbne trin', () => {
 test('visNummer', () => {
   assert.strictEqual(M.visNummer('4512345678'), '+45 12 34 56 78');
   assert.strictEqual(M.visNummer('12345678'), '12 34 56 78');
+});
+
+test('primaerSmerte bruger de verificerede værdier (MAIL og OVERBLIK)', () => {
+  assert.deepStrictEqual(Object.values(M.PRIMAER_SMERTE).sort(),
+    ['DOKUMENTATION', 'FAKTURERING', 'MAIL', 'OVERBLIK', 'PLANLAEGNING', 'TILBUD', 'TIMER_LOEN']);
+  assert.strictEqual(M.primaerSmerte('kommunikation/mail'), 'MAIL');
+  assert.strictEqual(M.primaerSmerte('overblik/styring'), 'OVERBLIK');
+});
+
+test('signaltyper: ingen KONSEKVENS, status FORESLAAET', () => {
+  assert.deepStrictEqual(Object.values(M.SIGNAL_TYPE).sort(), ['ANLEDNING', 'INDVENDING', 'KONKURRENT', 'KUNDENS_ORD', 'SMERTE']);
+  assert.strictEqual(M.SIGNAL.type, 'signaltype');
+  assert.strictEqual(M.SIGNAL.vaerdi, 'vaerdi');
+  assert.strictEqual(M.SIGNAL_STATUS.FORESLAAET, 'FORESLAAET');
+  assert.strictEqual(M.OBJECTS.onboarding, 'onboardings');
+});
+
+test('systemnavne → driftssystem, regnskabsprogram og lonprogram', () => {
+  assert.strictEqual(M.driftssystem('Apacta'), 'APACTA');
+  assert.strictEqual(M.driftssystem('Ordrestyring.dk'), 'ORDRESTYRING_DK');
+  assert.strictEqual(M.driftssystem('Excel'), 'EXCEL_REGNEARK');
+  assert.strictEqual(M.driftssystem('papir'), 'PAPIR_MANUELT');
+  assert.strictEqual(M.driftssystem('E-Komplet'), 'E_KOMPLET');
+  assert.strictEqual(M.regnskabsprogram('e-conomic'), 'E_CONOMIC');
+  assert.strictEqual(M.regnskabsprogram('Business Central'), 'VISMA_ANDET_ERP');
+  assert.strictEqual(M.lonprogram('Danløn'), 'DANLOEN');
+  assert.strictEqual(M.lonprogram('Proløn'), 'PROLOEN');
+  assert.strictEqual(M.lonprogram('ukendt system'), null);
 });

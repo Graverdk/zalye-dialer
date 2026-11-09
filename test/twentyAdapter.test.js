@@ -40,7 +40,7 @@ test.beforeEach(() => {
 });
 
 function seedCustomer({ phone = '12345678', telefon8 = '12345678', stage = 'KVALIFICERET', additional = [] } = {}) {
-  const company = tw.add('companies', { name: 'Maler ApS', employees: null, branche: [], driftssystem: null });
+  const company = tw.add('companies', { name: 'Maler ApS', employees: null, branche: [], driftssystem: [], regnskabsprogram: [], lonprogram: [] });
   const person = tw.add('people', {
     name: { firstName: 'Ole', lastName: 'Hansen' },
     phones: { primaryPhoneNumber: phone, primaryPhoneCallingCode: '+45', additionalPhones: additional },
@@ -103,8 +103,8 @@ test('opslag giver åben salgsmulighed, ellers VUNDET + aktiv onboarding', async
   assert.deepStrictEqual(links, { latestDealId: opp.id, companyId: company.id });
 
   tw.db.opportunities.get(opp.id).stage = 'VUNDET';
-  const ob = tw.add('onboardinger', { virksomhedId: company.id, fase: 'OPSTART' });
-  tw.add('onboardinger', { virksomhedId: company.id, fase: 'STOPPET' });
+  const ob = tw.add('onboardings', { virksomhedId: company.id, fase: 'I_BRUG' });
+  tw.add('onboardings', { virksomhedId: company.id, fase: 'STOPPET' });
   const links2 = await run(() => twenty.getLinks(person.id, tw.db.people.get(person.id)));
   assert.strictEqual(links2.latestDealId, opp.id);
   assert.strictEqual(links2.onboardingId, ob.id);
@@ -195,27 +195,28 @@ test('autofill udfylder kun tomme felter og foreslår resten', async () => {
   const { person, company, opp } = seedCustomer();
   const match = { personId: person.id, companyId: company.id, latestDealId: opp.id };
   const analysis = {
-    profile: { antalMedarbejdere: 12, faggruppe: 'maler', driftssystem: 'Apacta', regnskabsprogram: 'e-conomic' },
-    journey: { kontaktRolle: 'ejer/direktør', anledning: 'vækst/nye ansatte', primaerSmerte: 'planlægning', konsekvens: ['5 timer om ugen på planlægning'] },
+    profile: { antalMedarbejdere: 12, faggruppe: 'maler', driftssystem: 'Apacta', regnskabsprogram: 'e-conomic', loenprogram: 'Danløn' },
+    journey: { kontaktRolle: 'ejer/direktør', anledning: 'vækst/nye ansatte', primaerSmerte: 'kommunikation/mail', konsekvens: ['5 timer om ugen på planlægning'] },
     objections: ['For dyrt'],
   };
-  tw.db.companies.get(company.id).regnskabsprogram = 'ANDET';
+  tw.db.companies.get(company.id).regnskabsprogram = ['ANDET'];
   const af = await run(() => twenty.autofill({ match, analysis }));
   const c = tw.db.companies.get(company.id);
   assert.strictEqual(c.employees, 12);
   assert.deepStrictEqual(c.branche, ['MALER']);
-  assert.strictEqual(c.driftssystem, 'APACTA');
-  assert.strictEqual(c.regnskabsprogram, 'ANDET', 'eksisterende værdi overskrives aldrig');
+  assert.deepStrictEqual(c.driftssystem, ['APACTA'], 'MULTI_SELECT skrives som liste');
+  assert.deepStrictEqual(c.lonprogram, ['DANLOEN']);
+  assert.deepStrictEqual(c.regnskabsprogram, ['ANDET'], 'eksisterende værdi overskrives aldrig');
   assert.strictEqual(tw.db.people.get(person.id).rolle, 'EJER_DIREKTOER');
   const o = tw.db.opportunities.get(opp.id);
   assert.strictEqual(o.anledning, 'VAEKST');
-  assert.strictEqual(o.primaerSmerte, 'PLANLAEGNING');
+  assert.strictEqual(o.primaerSmerte, 'MAIL', 'kommunikation/mail → MAIL');
   assert.strictEqual(o.indvending, 'Har allerede noget', 'eksisterende indvending overskrives ikke');
   assert.strictEqual(o.konsekvensTimerUge, 5);
   assert.ok(af.suggestions.some((s) => s.felt === 'company.regnskabsprogram' && s.vaerdi === 'E_CONOMIC'));
   assert.ok(af.suggestions.some((s) => s.felt === 'opportunity.indvending'));
   assert.deepStrictEqual(af.changes.map((x) => x.felt).sort(),
-    ['Anledning', 'Antal ansatte', 'Driftssystem', 'Fag', 'Konsekvens', 'Konsekvens (timer/uge)', 'Primær smerte', 'Rolle'].sort());
+    ['Anledning', 'Antal ansatte', 'Driftssystem', 'Fag', 'Konsekvens', 'Konsekvens (timer/uge)', 'Lønprogram', 'Primær smerte', 'Rolle'].sort());
 });
 
 test('DEMO_BOOKET: kun fremad, og booketAf sættes ud fra Relatel-brugeren', async () => {
@@ -240,7 +241,7 @@ test('signaler oprettes i ét batch-kald med status FORESLAAET', async () => {
   const match = { personId: person.id, companyId: company.id, latestDealId: opp.id };
   const analysis = {
     profile: { konkurrenter: [{ navn: 'Apacta', forhold: 'bruger_i_dag' }] },
-    journey: { anledning: 'vækst/nye ansatte', primaerSmerte: 'planlægning', kundensOrd: ['Vi drukner i papir'] },
+    journey: { anledning: 'vækst/nye ansatte', primaerSmerte: 'overblik/styring', kundensOrd: ['Vi drukner i papir'], konsekvens: ['10 timer om ugen'] },
     objections: ['For dyrt', 'Ingen tid'],
   };
   const n = await run(() => twenty.afterAnalysis({ recordId: 'samtale-1', match, analysis, autofill: { suggestions: [{ felt: 'opportunity.indvending', vaerdi: 'For dyrt; Ingen tid' }] } }));
@@ -248,7 +249,13 @@ test('signaler oprettes i ét batch-kald med status FORESLAAET', async () => {
   assert.strictEqual(tw.count('POST', '/batch/signaler'), 1);
   const sig = [...tw.db.signaler.values()];
   assert.ok(sig.every((s) => s.status === 'FORESLAAET' && s.samtaleId === 'samtale-1' && s.virksomhedId === company.id && s.salgsmulighedId === opp.id));
-  assert.deepStrictEqual(sig.map((s) => s.signaltype).sort(), ['ANLEDNING', 'INDVENDING', 'INDVENDING', 'KONKURRENT', 'KUNDENS_ORD', 'SMERTE']);
+  assert.deepStrictEqual(sig.map((s) => s.signaltype).sort(), ['ANLEDNING', 'INDVENDING', 'INDVENDING', 'KONKURRENT', 'KUNDENS_ORD', 'SMERTE'], 'ingen KONSEKVENS-signal');
+  const by = (t) => sig.find((s) => s.signaltype === t);
+  assert.strictEqual(by('ANLEDNING').vaerdi, 'VAEKST', 'enum-værdien i vaerdi');
+  assert.strictEqual(by('SMERTE').vaerdi, 'OVERBLIK');
+  assert.strictEqual(by('KONKURRENT').vaerdi, 'Apacta (bruger_i_dag)');
+  assert.deepStrictEqual(by('KUNDENS_ORD').citat, { markdown: 'Vi drukner i papir' });
+  assert.ok(sig.every((s) => !('tekst' in s)), 'feltet tekst findes ikke i Twenty');
   const withForslag = sig.filter((s) => s.forslag === 'UDFYLD_FELT');
   assert.strictEqual(withForslag.length, 1);
   assert.strictEqual(withForslag[0].forslagFelt, 'opportunity.indvending');

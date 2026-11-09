@@ -335,18 +335,19 @@ async function autofill({ match, analysis, coaching, row } = {}) {
       if (isEmpty(company[C.employees]) && Number.isInteger(p.antalMedarbejdere) && p.antalMedarbejdere > 0) {
         set('Antal ansatte', C.employees, p.antalMedarbejdere);
       }
-      const brancheVal = meta.matchOption(OBJECTS.company, C.branche, p.faggruppe, M.branche(p.faggruppe)) || M.branche(p.faggruppe);
+      const brancheVal = M.branche(p.faggruppe) || meta.matchOption(OBJECTS.company, C.branche, p.faggruppe);
       if (brancheVal && isEmpty(company[C.branche])) set('Fag', C.branche, [brancheVal], brancheVal);
-      const system = (felt, key, raw) => {
-        const v = meta.matchOption(OBJECTS.company, key, raw);
+      // Systemfelterne er MULTI_SELECT i Twenty. Fast mapping først, ellers Twentys egne options.
+      const system = (felt, key, raw, fixed) => {
+        const v = fixed || meta.matchOption(OBJECTS.company, key, raw);
         if (!v) return;
-        const type = meta.fieldType(OBJECTS.company, key);
+        const type = meta.fieldType(OBJECTS.company, key) || 'MULTI_SELECT';
         if (isEmpty(company[key])) set(felt, key, type === 'MULTI_SELECT' ? [v] : v, v);
         else if (![].concat(company[key]).includes(v)) suggestions.push({ felt: 'company.' + key, vaerdi: v });
       };
-      system('Driftssystem', C.driftssystem, p.driftssystem);
-      system('Regnskabsprogram', C.regnskabsprogram, p.regnskabsprogram);
-      system('Lønprogram', C.lonprogram, p.loenprogram);
+      system('Driftssystem', C.driftssystem, p.driftssystem, M.driftssystem(p.driftssystem));
+      system('Regnskabsprogram', C.regnskabsprogram, p.regnskabsprogram, M.regnskabsprogram(p.regnskabsprogram));
+      system('Lønprogram', C.lonprogram, p.loenprogram, M.lonprogram(p.loenprogram));
       const body = meta.clean(OBJECTS.company, upd);
       if (Object.keys(body).length && (await client.patch(`/${OBJECTS.company}/${companyId}`, body)).ok) {
         // felter, som meta.clean droppede, er ikke udfyldt
@@ -368,7 +369,7 @@ async function autofill({ match, analysis, coaching, row } = {}) {
         else if (opp[key] !== value) suggestions.push({ felt: 'opportunity.' + key, vaerdi: value });
       };
       fill('Anledning', O.anledning, M.anledning(j.anledning));
-      fill('Primær smerte', O.primaerSmerte, meta.matchOption(OBJECTS.opportunity, O.primaerSmerte, j.primaerSmerte, M.primaerSmerte(j.primaerSmerte)) || M.primaerSmerte(j.primaerSmerte));
+      fill('Primær smerte', O.primaerSmerte, M.primaerSmerte(j.primaerSmerte));
       const objections = Array.isArray(analysis.objections) ? analysis.objections : [];
       fill('Indvending', O.indvending, objections.length ? objections.join('; ') : null);
       const kons = Array.isArray(j.konsekvens) ? j.konsekvens : [];
@@ -404,7 +405,10 @@ async function autofill({ match, analysis, coaching, row } = {}) {
 }
 
 // ------------------------------------------------------------
-// Signaler: ét batch-kald med status=FORESLAAET
+// Signaler: ét batch-kald med status=FORESLAAET. signaltype er en af
+// ANLEDNING, SMERTE, INDVENDING, KONKURRENT, KUNDENS_ORD (ingen KONSEKVENS —
+// konsekvens står på salgsmuligheden). vaerdi = enum-værdien, hvis den
+// findes (fx VAEKST), ellers teksten; citat = kundens ordrette ord.
 // ------------------------------------------------------------
 const SIGNAL_BATCH_MAX = 60;
 const short = (s, n = 80) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
@@ -418,18 +422,19 @@ function buildSignals({ samtaleId, match, analysis, suggestions = [] }) {
   if (match && match.companyId) base[G.virksomhedId] = match.companyId;
   if (match && match.latestDealId) base[G.salgsmulighedId] = match.latestDealId;
   const out = [];
-  const add = (type, label, tekst, forslagFelt) => {
+  const add = (type, label, tekst, { vaerdi, citat, forslagFelt } = {}) => {
     if (!tekst) return;
-    const rec = { ...base, [G.name]: short(label + ': ' + tekst), [G.type]: type, [G.tekst]: String(tekst) };
+    const rec = { ...base, [G.name]: short(label + ': ' + tekst), [G.type]: type, [G.vaerdi]: String(vaerdi || tekst) };
+    if (citat) rec[G.citat] = { markdown: String(citat) };
     const s = forslagFelt && suggestions.find((x) => x.felt === forslagFelt);
     if (s) Object.assign(rec, { [G.forslag]: M.SIGNAL_FORSLAG.UDFYLD_FELT, [G.forslagFelt]: s.felt, [G.forslagVaerdi]: String(s.vaerdi) });
     out.push(rec);
   };
-  add(T.ANLEDNING, 'Anledning', j.anledning, 'opportunity.' + M.OPPORTUNITY.anledning);
-  add(T.SMERTE, 'Smerte', j.primaerSmerte, 'opportunity.' + M.OPPORTUNITY.primaerSmerte);
-  (analysis.objections || []).forEach((o, i) => add(T.INDVENDING, 'Indvending', o, i === 0 ? 'opportunity.' + M.OPPORTUNITY.indvending : null));
+  add(T.ANLEDNING, 'Anledning', j.anledning, { vaerdi: M.anledning(j.anledning), forslagFelt: 'opportunity.' + M.OPPORTUNITY.anledning });
+  add(T.SMERTE, 'Smerte', j.primaerSmerte, { vaerdi: M.primaerSmerte(j.primaerSmerte), forslagFelt: 'opportunity.' + M.OPPORTUNITY.primaerSmerte });
+  (analysis.objections || []).forEach((o, i) => add(T.INDVENDING, 'Indvending', o, { forslagFelt: i === 0 ? 'opportunity.' + M.OPPORTUNITY.indvending : null }));
   (p.konkurrenter || []).forEach((k) => add(T.KONKURRENT, 'Konkurrent', k && k.navn ? `${k.navn} (${k.forhold})` : null));
-  (j.kundensOrd || []).forEach((q) => add(T.KUNDENS_ORD, 'Kundens ord', q));
+  (j.kundensOrd || []).forEach((q) => add(T.KUNDENS_ORD, 'Kundens ord', q, { citat: q }));
   return out.slice(0, SIGNAL_BATCH_MAX);
 }
 

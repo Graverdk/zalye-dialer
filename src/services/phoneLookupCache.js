@@ -4,8 +4,11 @@
 // og Pipedrive og Twenty har hver sine rækker.
 //
 // - Match caches i 10 min.
-// - "Ingen match" caches i 24 timer: højst ét opslag pr. ukendt nummer pr.
-//   døgn pr. CRM. Et nyt opkald efter de 24 timer giver et frisk opslag.
+// - "Ingen match" caches i 15 min den første time efter første miss (så en
+//   kontakt, der lige er oprettet efter kaldet, fanges hurtigt — vigtigt i
+//   dual, hvor Twenty kan halte efter Pipedrive), og derefter i 24 timer.
+//   Højst 4-5 opslag den første time og derefter ét pr. døgn pr. nummer pr. CRM.
+//   Et nyt opslag efter de 24 timer starter en ny "første time".
 // - Rækken ryddes/overskrives, når nummeret matches (her eller via
 //   click-to-call).
 // - 401, 429, netværks- og andre fejl er IKKE "ingen match" og caches
@@ -20,6 +23,8 @@ const runStats = require('./runStats');
 
 const POSITIVE_TTL_MS = 10 * 60 * 1000;
 const NEGATIVE_TTL_MS = 24 * 60 * 60 * 1000;
+const NEGATIVE_FIRST_HOUR_TTL_MS = 15 * 60 * 1000;
+const FIRST_HOUR_MS = 60 * 60 * 1000;
 const MAX_LOOKUPS_PER_RUN = 25;
 const CACHE_HIT_LOG_MS = 60 * 60 * 1000;
 
@@ -80,6 +85,8 @@ function createPhoneLookupCache({
   now = Date.now,
   positiveTtlMs = POSITIVE_TTL_MS,
   negativeTtlMs = NEGATIVE_TTL_MS,
+  firstHourTtlMs = NEGATIVE_FIRST_HOUR_TTL_MS,
+  firstHourMs = FIRST_HOUR_MS,
   maxLookupsPerRun = MAX_LOOKUPS_PER_RUN,
   log = console,
 }) {
@@ -91,7 +98,7 @@ function createPhoneLookupCache({
     ON CONFLICT(crm, number_last8) DO UPDATE SET
       person_id = NULL, latest_deal_id = NULL, company_id = NULL, onboarding_id = NULL,
       checked_at = excluded.checked_at,
-      first_miss_at = COALESCE(phone_lookups.first_miss_at, excluded.first_miss_at)`);
+      first_miss_at = excluded.first_miss_at`);
   const putMatch = db.prepare(`INSERT INTO phone_lookups (crm, number_last8, person_id, latest_deal_id, company_id, onboarding_id, checked_at, first_miss_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
     ON CONFLICT(crm, number_last8) DO UPDATE SET
@@ -124,7 +131,10 @@ function createPhoneLookupCache({
     if (row && row.person_id && t - row.checked_at < positiveTtlMs) {
       return toMatch(row);
     }
-    if (row && !row.person_id && t - row.checked_at < negativeTtlMs) {
+    // "Ingen match": 15 min i den første time efter første miss, ellers 24 timer
+    const inFirstHour = row && !row.person_id && row.first_miss_at != null && t - row.first_miss_at < firstHourMs;
+    const negTtl = inFirstHour ? firstHourTtlMs : negativeTtlMs;
+    if (row && !row.person_id && t - row.checked_at < negTtl) {
       s[keys.cacheHits] = (s[keys.cacheHits] || 0) + 1;
       if (t - (hitLoggedAt.get(key) || 0) >= CACHE_HIT_LOG_MS) {
         hitLoggedAt.set(key, t);
@@ -142,7 +152,8 @@ function createPhoneLookupCache({
     const result = await search(phoneNumber);
     if (!result || result.status === 'error') return deferred(s, 'fejl'); // aldrig cachet som "ingen match"
     if (result.status === 'none') {
-      putNone.run(crm, key, t, t);
+      // Inden for den første time beholdes tidspunktet for første miss; ellers starter en ny time
+      putNone.run(crm, key, t, inFirstHour ? row.first_miss_at : t);
       return null;
     }
     const links = (await getDeals(result.person.id, result.person)) || {};
@@ -173,4 +184,6 @@ function createPhoneLookupCache({
   return { lookup, remember, forget, crm };
 }
 
-module.exports = { createPhoneLookupCache, last8, POSITIVE_TTL_MS, NEGATIVE_TTL_MS, MAX_LOOKUPS_PER_RUN };
+module.exports = {
+  createPhoneLookupCache, last8, POSITIVE_TTL_MS, NEGATIVE_TTL_MS, NEGATIVE_FIRST_HOUR_TTL_MS, FIRST_HOUR_MS, MAX_LOOKUPS_PER_RUN,
+};

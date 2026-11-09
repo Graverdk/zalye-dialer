@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const Database = require('better-sqlite3');
 const runStats = require('../src/services/runStats');
-const { createPhoneLookupCache, NEGATIVE_TTL_MS } = require('../src/services/phoneLookupCache');
+const { createPhoneLookupCache, NEGATIVE_TTL_MS, NEGATIVE_FIRST_HOUR_TTL_MS } = require('../src/services/phoneLookupCache');
 
 const NUMBER = '+45 92 82 10 85';
 
@@ -124,4 +124,25 @@ test('Twenty og Pipedrive deler tabel, men ikke rækker', async () => {
   assert.strictEqual((await runStats.run('t', () => pd.lookup(NUMBER), { log: quiet })).personId, 5);
   assert.strictEqual((await runStats.run('t', () => tw.lookup(NUMBER), { log: quiet })).personId, 'a1b2c3d4-0000-4000-8000-000000000001');
   assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM phone_lookups').get().n, 2);
+});
+
+test('"ingen match": 15 min den første time, derefter 24 timer — og en ny time efter et døgn', async () => {
+  const clock = { t: 5_000_000 };
+  const { cache, calls } = setup({ clock });
+  const look = () => runStats.run('test', () => cache.lookup(NUMBER), { log: quiet });
+  await look();                                         // første miss
+  clock.t += 10 * 60 * 1000; await look();              // +10 min: cache
+  assert.strictEqual(calls.length, 1);
+  clock.t += 6 * 60 * 1000; await look();               // +16 min: nyt opslag (15 min-reglen)
+  assert.strictEqual(calls.length, 2);
+  clock.t += 16 * 60 * 1000; await look();              // +32 min
+  clock.t += 16 * 60 * 1000; await look();              // +48 min
+  assert.strictEqual(calls.length, 4, 'opslag ved 0, 16, 32 og 48 min');
+  clock.t += 16 * 60 * 1000; await look();              // +64 min: efter første time gælder 24 t fra seneste tjek
+  clock.t += 10 * 3600 * 1000; await look();            // +10 t: stadig cache
+  assert.strictEqual(calls.length, 4, 'efter første time højst ét opslag pr. døgn');
+  clock.t += NEGATIVE_TTL_MS; await look();              // døgnet er gået: nyt opslag, og en ny første time starter
+  assert.strictEqual(calls.length, 5);
+  clock.t += NEGATIVE_FIRST_HOUR_TTL_MS + 1000; await look();
+  assert.strictEqual(calls.length, 6, 'ny første time efter døgnet');
 });

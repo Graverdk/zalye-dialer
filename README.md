@@ -12,19 +12,22 @@
 - Koden: `src/crm/` — `index.js` (valg af adapter, dual, isolation), `pipedrive.js` (de gamle
   `services/pipedrive.js` + `services/autofill.js` bag grænsefladen, uændret adfærd), `twenty.js` (REST),
   `twentyClient.js` (vagt + timeout), `twentyMeta.js` (tjek mod Twentys metadata), `twentyMapping.js`
-  (**alle** Twenty-felt- og option-navne ét sted, markeret PLAN/GÆT), `guard.js` (én rate limit-vagt pr. CRM).
+  (**alle** Twenty-felt- og option-navne ét sted, verificeret live 9/11 2026), `guard.js` (én rate limit-vagt pr. CRM).
 - Hvert opkald, hver SMS og hver Relatel-note bliver en **Samtale** med `eksterntId`
   `relatel-call:<uuid>` / `relatel-sms:<id>` / `relatel-note:<id>` — samme hændelse oprettes aldrig to gange.
   Analysen opdaterer samtalen med udfald, mødetype, temperatur, blokke, resumé, coachVurdering og transskript.
 - Telefonopslag: `telefon8` (de sidste 8 cifre), ellers `phones.primaryPhoneNumber` + tjek af
   `additionalPhones` i koden. `telefon8` sættes på personen ved match. Cachen `phone_lookups` er nu nøglet
-  på `(crm, sidste8)` med id'er som TEXT (gamle rækker flyttes automatisk som `pipedrive`).
+  på `(crm, sidste8)` med id'er som TEXT (gamle rækker flyttes automatisk som `pipedrive`). "Ingen match"
+  gælder 15 min i den første time efter første miss og derefter 24 timer (gælder både Pipedrive og Twenty).
 - Autofill udfylder kun tomme felter på virksomhed, person og salgsmulighed; andre værdier bliver forslag.
   Signaler (anledning, smerte, indvending, konkurrent, kundens ord) oprettes i ét batch-kald med
   `status=FORESLAAET`. Ved "booket" flyttes salgsmuligheden til `DEMO_BOOKET` — kun fra NY_LEAD,
   KVALIFICERET eller VENTER_PAA_DEMO_BOOKING — og `booketAf` sættes ud fra `moedebooker.relatelBruger`.
 - Ukendt nummer (Twenty svarer "ingen match") på et opkald over `TWENTY_UNKNOWN_NUMBER_MIN_SEC` giver én
-  opgave pr. nummer pr. dag til `TWENTY_UNKNOWN_NUMBER_ASSIGNEE_ID` (standard Jeppe).
+  opgave pr. nummer pr. dag til `TWENTY_UNKNOWN_NUMBER_ASSIGNEE_ID` (standard Jeppe). **Under dual:** sæt
+  `TWENTY_UNKNOWN_NUMBER_MIN_SEC=-1`, ellers kommer der opgaver på numre, der findes i Pipedrive, men endnu
+  ikke i Twenty. Slå dem til igen (fjern variablen) ved skiftet til `twenty`.
 - GDPR: kl. 03:50 tømmes `transskript` på samtaler med `kilde=DIALER` ældre end 12 mdr.
 - Rate limit: Twenty har sin egen vagt (pause ved 401/429) og et loft på `TWENTY_MAX_CALLS_PER_RUN` kald pr.
   kørsel. Loglinjen viser `Twenty-kald: n · Twenty udskudt: n …`, når kørslen rørte Twenty. 401 fra Twenty

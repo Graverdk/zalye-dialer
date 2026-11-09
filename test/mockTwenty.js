@@ -8,7 +8,7 @@ const realFetch = require('node-fetch');
 
 const SINGULAR = {
   people: 'person', companies: 'company', opportunities: 'opportunity', tasks: 'task',
-  samtaler: 'samtale', signaler: 'signal', onboardinger: 'onboarding', moedebookere: 'moedebooker',
+  samtaler: 'samtale', signaler: 'signal', onboardings: 'onboarding', moedebookere: 'moedebooker',
 };
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -136,16 +136,44 @@ function createMockTwenty({ metadata = null } = {}) {
   return { db, add, fetch, requests, failNext, count, reset() { requests.length = 0; failures.length = 0; } };
 }
 
-// Metadata svarende til twentyMapping.js (+ options som i planen)
+// Metadata som verificeret live på crm.zalye.si 9/11 2026 (claude-rettelser-twenty-vaerdier.md)
 const opt = (...values) => values.map((v) => ({ value: v, label: v }));
 function standardMetadata() {
   const f = (name, type = 'TEXT', options) => ({ name, type, ...(options ? { options } : {}) });
   return [
-    { nameSingular: 'person', namePlural: 'people', fields: [f('name', 'FULL_NAME'), f('phones', 'PHONES'), f('emails', 'EMAILS'), f('telefon8'), f('company', 'RELATION'), f('rolle', 'SELECT', opt('EJER_DIREKTOER', 'FORMAND_PROJEKTLEDER', 'KONTOR_ADMINISTRATION', 'SERVICE_DRIFTSCHEF', 'IT_OEKONOMI'))] },
-    { nameSingular: 'company', namePlural: 'companies', fields: [f('name'), f('employees', 'NUMBER'), f('branche', 'MULTI_SELECT', opt('MALER', 'TOEMRER_SNEDKER', 'ANLAEG_HAVE', 'VVS', 'EL')), f('driftssystem', 'SELECT', [{ value: 'APACTA', label: 'Apacta' }, { value: 'MANUELT', label: 'Manuelt' }]), f('regnskabsprogram', 'SELECT', [{ value: 'E_CONOMIC', label: 'e-conomic' }]), f('lonprogram', 'SELECT', [{ value: 'DANLOEN', label: 'Danløn' }])] },
-    { nameSingular: 'opportunity', namePlural: 'opportunities', fields: [f('name'), f('stage', 'SELECT', opt('NY_LEAD', 'KVALIFICERET', 'VENTER_PAA_DEMO_BOOKING', 'DEMO_BOOKET', 'DEMO_HOLDT', 'BESLUTNING', 'VUNDET', 'TABT')), f('company', 'RELATION'), f('pointOfContact', 'RELATION'), f('booketAf', 'RELATION'), f('anledning', 'SELECT', opt('VAEKST', 'UTILFREDS_MED_SYSTEM', 'FEJL_ELLER_TAB', 'EJER_ELLER_LEDERSKIFTE', 'NYSGERRIG_PAA_AI')), f('primaerSmerte', 'SELECT', opt('PLANLAEGNING', 'TILBUD')), f('indvending'), f('konsekvens'), f('konsekvensTimerUge', 'NUMBER')] },
-    { nameSingular: 'samtale', namePlural: 'samtaler', fields: [f('name'), f('samtaletype', 'SELECT', opt('OPKALD', 'SMS', 'NOTE')), f('retning', 'SELECT', opt('UD', 'IND')), f('dato', 'DATE_TIME'), f('varighedMin', 'NUMBER'), f('kilde', 'SELECT', opt('DIALER')), f('eksterntId'), f('person', 'RELATION'), f('virksomhed', 'RELATION'), f('salgsmulighed', 'RELATION'), f('onboarding', 'RELATION'), f('fortAf', 'RELATION'), f('moedebooker', 'RELATION'), f('udfald', 'SELECT', opt('IKKE_SVAR', 'MOEDE_BOOKET', 'IKKE_INTERESSERET', 'RING_IGEN', 'FORKERT_NUMMER')), f('modetype', 'SELECT', opt('BOOKING_KALD', 'M1_ANALYSE', 'M2_DEMO', 'OPFOELGNING', 'M4_M7_OPSTART', 'SUPPORT', 'PARTNER')), f('temperatur', 'SELECT', opt('VARM', 'LUN', 'KOLD')), f('blokkeDaekket', 'MULTI_SELECT', opt('ANLEDNING', 'SITUATION', 'SMERTE', 'KONSEKVENS', 'BESLUTNING', 'NAESTE_SKRIDT')), f('resume', 'RICH_TEXT_V2'), f('coachVurdering', 'RICH_TEXT_V2'), f('transskript', 'RICH_TEXT_V2')] },
-    { nameSingular: 'signal', namePlural: 'signaler', fields: [f('name'), f('signaltype', 'SELECT', opt('ANLEDNING', 'SMERTE', 'INDVENDING', 'KONKURRENT', 'KUNDENS_ORD')), f('tekst'), f('samtale', 'RELATION'), f('virksomhed', 'RELATION'), f('salgsmulighed', 'RELATION'), f('status', 'SELECT', opt('FORESLAAET', 'GODKENDT', 'AFVIST')), f('forslag', 'SELECT', opt('UDFYLD_FELT')), f('forslagFelt'), f('forslagVaerdi')] },
+    { nameSingular: 'person', namePlural: 'people', fields: [f('name', 'FULL_NAME'), f('phones', 'PHONES'), f('emails', 'EMAILS'), f('telefon8'), f('company', 'RELATION'),
+      f('rolle', 'SELECT', opt('EJER_DIREKTOER', 'FORMAND_PROJEKTLEDER', 'KONTOR_ADMINISTRATION', 'SERVICE_DRIFTSCHEF', 'IT_OEKONOMI'))] },
+    { nameSingular: 'company', namePlural: 'companies', fields: [f('name'), f('employees', 'NUMBER'),
+      f('branche', 'MULTI_SELECT', opt('ALGERENS', 'TOEMRER_SNEDKER', 'ANLAEG_HAVE', 'BLIK', 'EJENDOMSSERVICE', 'EL', 'KLOAK_ENTREPRENOER', 'FLISERENS', 'GULVE', 'HAVESERVICE', 'ISOLATOERER', 'MALER', 'MURER', 'RENGOERING_SERVICE', 'SERVICES', 'SKADESERVICES', 'TAG', 'OVERFLADEBEHANDLING', 'VENTILATION', 'VINDUESPOLERING', 'VVS', 'ANDET')),
+      f('driftssystem', 'MULTI_SELECT', opt('ANDET', 'APACTA', 'E_KOMPLET', 'E_REGNSKAB', 'EG', 'EXCEL_REGNEARK', 'FENSTER', 'KALA', 'MINUBA', 'MOBILPLAN', 'ORDRESTYRING_DK', 'PAPIR_MANUELT')),
+      f('regnskabsprogram', 'MULTI_SELECT', opt('DINERO', 'E_CONOMIC', 'E_KOMPLET', 'E_REGNSKAB', 'UNICONTA', 'BILLY', 'VISMA_ANDET_ERP', 'ANDET')),
+      f('lonprogram', 'MULTI_SELECT', opt('DANLOEN', 'DATALOEN_VISMA', 'ZENEGY', 'SALARY', 'PROLOEN', 'LESSOR', 'INTECT', 'E_CONOMIC_LOEN', 'ANDET', 'VED_IKKE'))] },
+    { nameSingular: 'opportunity', namePlural: 'opportunities', fields: [f('name'),
+      f('stage', 'SELECT', opt('NY_LEAD', 'KVALIFICERET', 'VENTER_PAA_DEMO_BOOKING', 'DEMO_BOOKET', 'DEMO_HOLDT', 'BESLUTNING', 'VUNDET', 'TABT', 'PARKERET')),
+      f('company', 'RELATION'), f('pointOfContact', 'RELATION'), f('owner', 'RELATION'), f('booketAf', 'RELATION'),
+      f('anledning', 'SELECT', opt('VAEKST', 'UTILFREDS_MED_SYSTEM', 'FEJL_ELLER_TAB', 'EJER_ELLER_LEDERSKIFTE', 'NYSGERRIG_PAA_AI')),
+      f('primaerSmerte', 'SELECT', opt('PLANLAEGNING', 'TILBUD', 'TIMER_LOEN', 'FAKTURERING', 'DOKUMENTATION', 'MAIL', 'OVERBLIK')),
+      f('indvending'), f('konsekvens'), f('konsekvensTimerUge', 'NUMBER'), f('manglendeFeatures', 'MULTI_SELECT', opt('AUTOMATISK_OPFOELGNING')),
+      f('kanal', 'SELECT', opt('PHONE_OUTREACH')), f('inboundOutbound', 'SELECT', opt('INBOUND', 'OUTBOUND'))] },
+    { nameSingular: 'samtale', namePlural: 'samtaler', fields: [f('name'),
+      f('samtaletype', 'SELECT', opt('OPKALD', 'SMS', 'MOEDE', 'MAIL', 'BESKED', 'NOTE')), f('retning', 'SELECT', opt('IND', 'UD')),
+      f('dato', 'DATE_TIME'), f('varighedMin', 'NUMBER'), f('kilde', 'SELECT', opt('DIALER', 'FIREFLIES', 'PIPEDRIVE_IMPORT', 'MANUEL')), f('eksterntId'),
+      f('person', 'RELATION'), f('virksomhed', 'RELATION'), f('salgsmulighed', 'RELATION'), f('onboarding', 'RELATION'), f('samarbejde', 'RELATION'),
+      f('fortAf', 'RELATION'), f('moedebooker', 'RELATION'),
+      f('udfald', 'SELECT', opt('IKKE_SVAR', 'RING_IGEN', 'IKKE_INTERESSERET', 'MOEDE_BOOKET', 'FORKERT_NUMMER')),
+      f('modetype', 'SELECT', opt('M1_ANALYSE', 'M2_DEMO', 'M3_BESLUTNING', 'M4_M7_OPSTART', 'OPFOELGNING', 'SUPPORT', 'PARTNER', 'BOOKING_KALD')),
+      f('temperatur', 'SELECT', opt('VARM', 'LUN', 'KOLD')),
+      f('blokkeDaekket', 'MULTI_SELECT', opt('ANLEDNING', 'SITUATION', 'SMERTE', 'KONSEKVENS', 'BESLUTNING', 'NAESTE_SKRIDT')),
+      f('resume', 'RICH_TEXT'), f('coachVurdering', 'RICH_TEXT'), f('transskript', 'RICH_TEXT'), f('optagelse', 'LINKS'), f('pipedriveId')] },
+    { nameSingular: 'signal', namePlural: 'signaler', fields: [f('name'),
+      f('signaltype', 'SELECT', opt('ANLEDNING', 'SMERTE', 'INDVENDING', 'FEATURE_OENSKE', 'SPOERGSMAAL', 'KONKURRENT', 'KUNDENS_ORD')),
+      f('vaerdi'), f('citat', 'RICH_TEXT'), f('blokererKobet', 'BOOLEAN'),
+      f('samtale', 'RELATION'), f('virksomhed', 'RELATION'), f('salgsmulighed', 'RELATION'),
+      f('status', 'SELECT', opt('FORESLAAET', 'GODKENDT', 'AFVIST')),
+      f('forslag', 'SELECT', opt('INGEN', 'UDFYLD_FELT', 'TRINSKIFT', 'NAESTE_SKRIDT', 'MAILKLADDE')), f('forslagFelt'), f('forslagVaerdi')] },
+    { nameSingular: 'onboarding', namePlural: 'onboardings', fields: [f('virksomhed', 'RELATION'),
+      f('fase', 'SELECT', opt('KLAR_TIL_OPSTART', 'KICKOFF_HOLDT', 'I_BRUG', 'I_PROJEKTFORLOEB', 'VAERDI', 'BETALENDE', 'STOPPET'))] },
+    { nameSingular: 'moedebooker', namePlural: 'moedebookere', fields: [f('name'), f('relatelBruger'), f('status', 'SELECT', opt('AKTIV', 'PAUSE', 'STOPPET'))] },
   ];
 }
 
