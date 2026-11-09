@@ -97,3 +97,31 @@ test('fundet person caches og giver deal med', async () => {
   const r = await runStats.run('test', () => cache.lookup(NUMBER), { log: quiet });
   assert.deepStrictEqual(r, { personId: 5, latestDealId: 7 });
 });
+
+test('gammel tabel (kun sidste 8, INTEGER-id) flyttes til (crm, sidste 8) uden at tabe rækker', async () => {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE phone_lookups (number_last8 TEXT PRIMARY KEY, person_id INTEGER, latest_deal_id INTEGER, checked_at INTEGER NOT NULL, first_miss_at INTEGER)`);
+  const t = Date.now();
+  db.prepare('INSERT INTO phone_lookups VALUES (?, ?, ?, ?, NULL)').run('92821085', 42, 9, t);
+  db.prepare('INSERT INTO phone_lookups VALUES (?, NULL, NULL, ?, ?)').run('22751363', t, t);
+  const calls = [];
+  const origLog = console.log; console.log = () => {};
+  const cache = createPhoneLookupCache({ db, search: async (p) => { calls.push(p); return { status: 'none' }; }, getDeals: async () => ({}), log: quiet });
+  console.log = origLog;
+  const cols = db.prepare('PRAGMA table_info(phone_lookups)').all().map((c) => c.name);
+  assert.ok(cols.includes('crm'));
+  const r = await runStats.run('test', () => cache.lookup(NUMBER), { log: quiet });
+  assert.deepStrictEqual(r, { personId: 42, latestDealId: 9 }, 'Pipedrive-id er stadig et tal');
+  assert.strictEqual(await runStats.run('test', () => cache.lookup('+45 22 75 13 63'), { log: quiet }), null, '"ingen match" bevaret');
+  assert.strictEqual(calls.length, 0);
+});
+
+test('Twenty og Pipedrive deler tabel, men ikke rækker', async () => {
+  const db = new Database(':memory:');
+  const mk = (crm, id) => createPhoneLookupCache({ db, crm, search: async () => ({ status: 'found', person: { id } }), getDeals: async () => ({ latestDealId: null }), log: quiet });
+  const pd = mk('pipedrive', 5);
+  const tw = mk('twenty', 'a1b2c3d4-0000-4000-8000-000000000001');
+  assert.strictEqual((await runStats.run('t', () => pd.lookup(NUMBER), { log: quiet })).personId, 5);
+  assert.strictEqual((await runStats.run('t', () => tw.lookup(NUMBER), { log: quiet })).personId, 'a1b2c3d4-0000-4000-8000-000000000001');
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM phone_lookups').get().n, 2);
+});

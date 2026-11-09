@@ -1,4 +1,38 @@
 # zalye-dialer
+## Twenty bag et feature-flag (11/2026)
+`CRM_MODE` styrer hvor opkald, SMS og Relatel-noter skrives hen. Standard er `pipedrive`, så en merge
+ændrer intet i drift.
+
+| CRM_MODE | Primær | Skygge | Bemærk |
+|---|---|---|---|
+| `pipedrive` | Pipedrive | — | Som før. Twenty røres ikke. |
+| `dual` | Pipedrive | Twenty | Twenty skrives *efter* Pipedrive og i en fejl-isoleret blok: 4xx/5xx, 429, timeout eller en undtagelse i Twenty blokerer aldrig Pipedrive, holder aldrig opkalds-markøren tilbage og pauser ikke Pipedrive-vagten. GDPR-reglen følger Pipedrive. |
+| `twenty` | Twenty | — | Pipedrive røres ikke (`PIPEDRIVE_API_TOKEN` valgfri). GDPR: kun opkald med Twenty-match transskriberes. Navnesynken til Relatel læser fra Twenty-personen. |
+
+- Koden: `src/crm/` — `index.js` (valg af adapter, dual, isolation), `pipedrive.js` (de gamle
+  `services/pipedrive.js` + `services/autofill.js` bag grænsefladen, uændret adfærd), `twenty.js` (REST),
+  `twentyClient.js` (vagt + timeout), `twentyMeta.js` (tjek mod Twentys metadata), `twentyMapping.js`
+  (**alle** Twenty-felt- og option-navne ét sted, markeret PLAN/GÆT), `guard.js` (én rate limit-vagt pr. CRM).
+- Hvert opkald, hver SMS og hver Relatel-note bliver en **Samtale** med `eksterntId`
+  `relatel-call:<uuid>` / `relatel-sms:<id>` / `relatel-note:<id>` — samme hændelse oprettes aldrig to gange.
+  Analysen opdaterer samtalen med udfald, mødetype, temperatur, blokke, resumé, coachVurdering og transskript.
+- Telefonopslag: `telefon8` (de sidste 8 cifre), ellers `phones.primaryPhoneNumber` + tjek af
+  `additionalPhones` i koden. `telefon8` sættes på personen ved match. Cachen `phone_lookups` er nu nøglet
+  på `(crm, sidste8)` med id'er som TEXT (gamle rækker flyttes automatisk som `pipedrive`).
+- Autofill udfylder kun tomme felter på virksomhed, person og salgsmulighed; andre værdier bliver forslag.
+  Signaler (anledning, smerte, indvending, konkurrent, kundens ord) oprettes i ét batch-kald med
+  `status=FORESLAAET`. Ved "booket" flyttes salgsmuligheden til `DEMO_BOOKET` — kun fra NY_LEAD,
+  KVALIFICERET eller VENTER_PAA_DEMO_BOOKING — og `booketAf` sættes ud fra `moedebooker.relatelBruger`.
+- Ukendt nummer (Twenty svarer "ingen match") på et opkald over `TWENTY_UNKNOWN_NUMBER_MIN_SEC` giver én
+  opgave pr. nummer pr. dag til `TWENTY_UNKNOWN_NUMBER_ASSIGNEE_ID` (standard Jeppe).
+- GDPR: kl. 03:50 tømmes `transskript` på samtaler med `kilde=DIALER` ældre end 12 mdr.
+- Rate limit: Twenty har sin egen vagt (pause ved 401/429) og et loft på `TWENTY_MAX_CALLS_PER_RUN` kald pr.
+  kørsel. Loglinjen viser `Twenty-kald: n · Twenty udskudt: n …`, når kørslen rørte Twenty. 401 fra Twenty
+  i to kørsler i træk giver alarm som for Pipedrive.
+- Backfill: `node scripts/backfill-twenty.js --dry-run` (tæller), derefter uden `--dry-run`. Kan genoptages.
+- Fjernet: de døde admin-ruter `/api/calls/unpin-notes` og `/api/calls/debug/pipedrive-note/:id`.
+- Tests: `npm test`. Twenty er mocket (`test/mockTwenty.js`), og netværket er slået fra i tests.
+
 ## Salgscoaching efter hvert kald (7/10/2026)
 - Efter analysen coacher `services/coaching.js` kaldet ud fra det fulde transskript (som bliver her,
   GDPR-beslutning 24/9). Grundlaget er `src/coaching/playbook.md` + de seneste 10 coachede kald.

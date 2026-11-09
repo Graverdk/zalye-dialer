@@ -222,7 +222,11 @@ router.get('/debug/db-status', requireAdmin, (req, res) => {
         pipedrive_note_id,
         pipedrive_person_id IS NOT NULL AS linked,
         pipedrive_activity_id,
-        (pipedrive_note_id IS NOT NULL OR pipedrive_activity_id IS NOT NULL) AS has_note
+        (pipedrive_note_id IS NOT NULL OR pipedrive_activity_id IS NOT NULL) AS has_note,
+        twenty_person_id,
+        twenty_opportunity_id,
+        twenty_samtale_id,
+        twenty_signaler_at
       FROM calls
       ORDER BY started_at DESC
       LIMIT 30
@@ -238,64 +242,8 @@ router.get('/debug/db-status', requireAdmin, (req, res) => {
   }
 });
 
-// POST /api/calls/unpin-notes — un-pin alle Zalye-oprettede noter
-// (eksisterende noter står som pinned; dette gør at de fremover vises
-// under Notes-fanen i Pipedrive i stedet for i Focus-sektionen)
-router.post('/unpin-notes', requireAdmin, async (req, res) => {
-  const fetch = require('node-fetch');
-  const config = require('../config');
-  const { db } = require('../db/database');
-  try {
-    const notes = db.prepare(`
-      SELECT DISTINCT pipedrive_note_id, pipedrive_deal_id
-      FROM calls
-      WHERE pipedrive_note_id IS NOT NULL AND pipedrive_deal_id IS NOT NULL
-    `).all();
-
-    let unpinned = 0;
-    let failed = 0;
-    for (const n of notes) {
-      try {
-        const url = `${config.pipedrive.baseUrl}/notes/${n.pipedrive_note_id}`;
-        const r = await fetch(url, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'x-api-token': config.pipedrive.apiToken },
-          body: JSON.stringify({ pinned_to_deal_flag: false }),
-        });
-        if (r.ok) unpinned++;
-        else failed++;
-      } catch (e) {
-        failed++;
-      }
-    }
-    res.json({ success: true, unpinned, failed, totalChecked: notes.length });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/calls/debug/pipedrive-note/:id — tjek om en Pipedrive-note eksisterer
-router.get('/debug/pipedrive-note/:id', requireAdmin, async (req, res) => {
-  const fetch = require('node-fetch');
-  const config = require('../config');
-  const url = `${config.pipedrive.baseUrl}/notes/${encodeURIComponent(req.params.id)}`;
-  try {
-    const r = await fetch(url, { headers: { 'x-api-token': config.pipedrive.apiToken } });
-    const data = await r.json();
-    res.json({
-      httpStatus: r.status,
-      exists: r.ok,
-      noteId: data?.data?.id,
-      dealId: data?.data?.deal_id,
-      personId: data?.data?.person_id,
-      addTime: data?.data?.add_time,
-      contentPreview: (data?.data?.content || '').substring(0, 300),
-      rawError: r.ok ? null : data,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// (Fjernet 11/2026: /unpin-notes og /debug/pipedrive-note/:id — engangsværktøjer
+// til den gamle Pipedrive-note-model, som ikke er brugt siden 24/9 2026.)
 
 // POST /api/calls/reset-attempts — nulstil attempt-tæller så failed kan prøves igen
 router.post('/reset-attempts', requireAdmin, (req, res) => {
@@ -359,7 +307,7 @@ router.post('/retry-transcription', requireAdmin, async (req, res) => {
 // ============================================================
 // POST /api/calls/backfill?days=7
 // Catch-up: hent alle opkald fra sidste N dage og (re)processer
-// dem der mangler transskription eller Pipedrive-note.
+// dem der mangler transskription eller en post i CRM'et.
 // ============================================================
 router.post('/backfill', requireAdmin, async (req, res) => {
   const { backfillCalls, processTranscriptions } = require('../jobs/pollCalls');

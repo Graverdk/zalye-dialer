@@ -1,5 +1,5 @@
 // ============================================================
-// Fejlalarm: når Pipedrive eller Relatel svarer 401 i to kørsler i træk,
+// Fejlalarm: når Pipedrive, Twenty eller Relatel svarer 401 i to kørsler i træk,
 // sendes én alarm pr. time pr. tjeneste. En død nøgle må ikke kunne stå
 // i dagevis, uden at nogen opdager det (sket 22/10).
 //
@@ -14,7 +14,7 @@ const runStats = require('./runStats');
 
 const ALERT_INTERVAL_MS = 60 * 60 * 1000;
 const RUNS_BEFORE_ALERT = 2;
-const LABEL = { pipedrive: 'Pipedrive', relatel: 'Relatel' };
+const LABEL = { pipedrive: 'Pipedrive', relatel: 'Relatel', twenty: 'Twenty' };
 
 let dbRef = null;
 let sendImpl = null;
@@ -73,7 +73,7 @@ function buildMessage({ provider, runs, jobName }) {
   const name = LABEL[provider] || provider;
   const title = 'Zalye-dialer: ' + name + ' afviser nøglen (401)';
   const text = name + ' har svaret 401 i ' + runs + ' kørsler i træk (seneste: ' + (jobName || 'ukendt') + '). '
-    + 'Opkald, SMS og noter kommer ikke i Pipedrive, før nøglen er skiftet i Railway (zalye-dialer › Variables) og rullet ud. '
+    + 'Opkald, SMS og noter kommer ikke i ' + (provider === 'twenty' ? 'Twenty' : 'Pipedrive') + ', før nøglen er skiftet i Railway (zalye-dialer › Variables) og rullet ud. '
     + 'Næste alarm tidligst om 1 time.';
   return { title, text };
 }
