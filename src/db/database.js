@@ -206,8 +206,40 @@ ensureColumn('messages', 'pipedrive_activity_id', 'INTEGER');
 ensureColumn('call_insights', 'profile_json', 'TEXT');
 
 // ============================================================
+// Twenty (CRM_MODE=dual|twenty). Twenty bruger UUID'er, så alle id'er er
+// TEXT — brug ALDRIG parseInt på dem, og læg dem aldrig i pipedrive_*-
+// kolonnerne (INTEGER). twenty_samtale_id er "allerede synket" i Twenty.
+// ============================================================
+for (const table of ['calls', 'messages']) {
+  ensureColumn(table, 'twenty_samtale_id', 'TEXT');
+  ensureColumn(table, 'twenty_person_id', 'TEXT');
+  ensureColumn(table, 'twenty_company_id', 'TEXT');
+  ensureColumn(table, 'twenty_opportunity_id', 'TEXT');
+  ensureColumn(table, 'twenty_onboarding_id', 'TEXT');
+}
+// Hvornår signalerne for kaldet blev oprettet (ISO) — så et genforsøg ikke laver dubletter
+ensureColumn('calls', 'twenty_signaler_at', 'TEXT');
+ensureColumn('relatel_notes', 'twenty_record_id', 'TEXT');
+ensureColumn('relatel_notes', 'twenty_person_id', 'TEXT');
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_calls_twenty_person    ON calls(twenty_person_id);
+  CREATE INDEX IF NOT EXISTS idx_messages_twenty_person ON messages(twenty_person_id);
+`);
+
+// ============================================================
 // Hjælpefunktioner
 // ============================================================
+
+// Kolonnenavne der må sættes ind i SQL (fra src/crm-adapterne)
+const ALLOWED_COLUMNS = new Set([
+  'pipedrive_person_id', 'pipedrive_deal_id', 'pipedrive_note_id', 'pipedrive_activity_id',
+  'twenty_samtale_id', 'twenty_person_id', 'twenty_company_id', 'twenty_opportunity_id',
+  'twenty_onboarding_id', 'twenty_record_id', 'twenty_signaler_at',
+]);
+function assertColumn(c) {
+  if (!ALLOWED_COLUMNS.has(c)) throw new Error('Ukendt kolonne: ' + c);
+  return c;
+}
 
 const calls = {
   upsert(callData) {
@@ -287,15 +319,18 @@ const calls = {
     );
   },
 
-  getPendingTranscriptions() {
-    // KUN opkald med Pipedrive-match transskriberes (GDPR + omkostninger).
+  // personColumn = det primære CRM's person-kolonne (pipedrive_person_id eller
+  // twenty_person_id). Kolonnenavnet kommer altid fra koden (src/crm), aldrig udefra.
+  getPendingTranscriptions(personColumn = 'pipedrive_person_id') {
+    assertColumn(personColumn);
+    // KUN opkald med match i det primære CRM transskriberes (GDPR + omkostninger).
     // Umatchede venter — se matchUnmatchedPendingCalls/expireUnmatchedCalls i pollCalls.js
     return db.prepare(`
       SELECT * FROM calls
       WHERE transcription_status = 'pending'
         AND recording_url IS NOT NULL
         AND ended_at IS NOT NULL
-        AND pipedrive_person_id IS NOT NULL
+        AND ${personColumn} IS NOT NULL
       ORDER BY ended_at ASC
       LIMIT 5
     `).all();
@@ -567,14 +602,18 @@ const relatelNotes = {
     return db.prepare(`
       INSERT INTO relatel_notes (
         relatel_id, relatel_contact_id, phone_number, author, body,
-        created_at_rel, pipedrive_person_id, pipedrive_note_id
+        created_at_rel, pipedrive_person_id, pipedrive_note_id,
+        twenty_person_id, twenty_record_id
       ) VALUES (
         @relatel_id, @relatel_contact_id, @phone_number, @author, @body,
-        @created_at_rel, @pipedrive_person_id, @pipedrive_note_id
+        @created_at_rel, @pipedrive_person_id, @pipedrive_note_id,
+        @twenty_person_id, @twenty_record_id
       )
       ON CONFLICT(relatel_id) DO UPDATE SET
         pipedrive_person_id = COALESCE(excluded.pipedrive_person_id, pipedrive_person_id),
-        pipedrive_note_id   = COALESCE(excluded.pipedrive_note_id, pipedrive_note_id)
+        pipedrive_note_id   = COALESCE(excluded.pipedrive_note_id, pipedrive_note_id),
+        twenty_person_id    = COALESCE(excluded.twenty_person_id, twenty_person_id),
+        twenty_record_id    = COALESCE(excluded.twenty_record_id, twenty_record_id)
     `).run({
       relatel_id: noteData.relatel_id,
       relatel_contact_id: noteData.relatel_contact_id || null,
@@ -584,6 +623,8 @@ const relatelNotes = {
       created_at_rel: noteData.created_at_rel || null,
       pipedrive_person_id: noteData.pipedrive_person_id || null,
       pipedrive_note_id: noteData.pipedrive_note_id || null,
+      twenty_person_id: noteData.twenty_person_id || null,
+      twenty_record_id: noteData.twenty_record_id || null,
     });
   },
 
@@ -624,4 +665,4 @@ const state = {
   },
 };
 
-module.exports = { db, calls, messages, relatelNotes, insights, dealOutcomes, state };
+module.exports = { db, calls, messages, relatelNotes, insights, dealOutcomes, state, assertColumn };

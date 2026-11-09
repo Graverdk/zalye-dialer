@@ -1,28 +1,55 @@
 'use strict';
 const cron = require('node-cron');
 const config = require('../config');
-const { db, calls, messages, relatelNotes, insights, state } = require('../db/database');
+const { db, calls, messages, relatelNotes, insights, state, assertColumn } = require('../db/database');
 const relatel = require('../services/relatel');
-const pipedrive = require('../services/pipedrive');
 const { transcribe, buildDiarizedTranscript } = require('../services/transcription');
 const claude = require('../services/claude');
 const coaching = require('../services/coaching');
-const { autofillFromCall } = require('../services/autofill');
 const runStats = require('../services/runStats');
 const alerts = require('../services/alerts');
-const { createPhoneLookupCache } = require('../services/phoneLookupCache');
+const crm = require('../crm');
 
-// Telefonopslag i Pipedrive caches i SQLite (phone_lookups, sidste 8 cifre),
-// så cachen overlever genstart og deploy. "Ingen match" gælder i 24 timer,
-// 401/429 caches aldrig, og højst 25 opslag pr. kørsel. Se
-// services/phoneLookupCache.js. Før gav et umatchet opkald et Pipedrive-kald
-// hvert 2. minut i op til 7 dage (set 21/10 og 22–23/10).
-const phoneCache = createPhoneLookupCache({
-  db,
-  search: (phone) => pipedrive.searchPersonByPhone(phone),
-  getDeals: (personId) => pipedrive.getPersonWithDeals(personId),
-  isPaused: () => pipedrive.isRateLimited(),
-});
+// ============================================================
+// CRM-laget (src/crm): P = det primære CRM (Pipedrive, eller Twenty ved
+// CRM_MODE=twenty). Ved CRM_MODE=dual skrives Twenty bagefter som skygge
+// via crm.shadowRun(), der aldrig kaster — Pipedrive er upåvirket.
+//
+// Telefonopslag caches i SQLite (phone_lookups, nøglet på (crm, sidste 8
+// cifre)), så cachen overlever genstart og deploy. "Ingen match" gælder i
+// 24 timer, 401/429 caches aldrig, og højst 25 opslag pr. kørsel pr. CRM.
+// Se services/phoneLookupCache.js. Før gav et umatchet opkald et
+// Pipedrive-kald hvert 2. minut i op til 7 dage (set 21/10 og 22–23/10).
+// ============================================================
+const P = crm.primary;
+const PC = P.cols;
+
+// UPDATE <table> SET <kolonner> WHERE <keyCol> = key. Kolonnenavne kommer fra
+// adapterne (src/crm) og tjekkes mod en whitelist i database.js.
+function setColumns(table, keyCol, key, values, { coalesce = [] } = {}) {
+  const entries = Object.entries(values).filter(([c]) => c);
+  if (!entries.length) return;
+  const sets = entries.map(([c]) => {
+    assertColumn(c);
+    return coalesce.includes(c) ? `${c} = COALESCE(${c}, ?)` : `${c} = ?`;
+  });
+  db.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE ${keyCol} = ?`).run(...entries.map((e) => e[1]), key);
+}
+
+// Telefonopslag i det primære CRM
+async function lookupPerson(phoneNumber) {
+  return crm.lookup(P, phoneNumber);
+}
+
+// Opgave ved ukendt nummer (kun Twenty har den). Best effort.
+async function maybeUnknownNumberTask(adapter, nc) {
+  if (!adapter.createUnknownNumberTask) return;
+  try {
+    await adapter.createUnknownNumberTask({ phone: nc.phone_number, call: nc });
+  } catch (e) {
+    console.error('[' + adapter.label + '] Opgave for ukendt nummer fejlede: ' + e.message);
+  }
+}
 
 // Berigelse af Relatel-kontakter: hvornår hver kontakt sidst blev tjekket
 // gemmes i DB (overlever genstart — før startede hver deploy en fuld scanning
@@ -47,7 +74,7 @@ const enrichedContactIds = {
 // ============================================================
 // In-flight-lås: samme job må aldrig køre to gange samtidig.
 // Cron + webhook + manuelle triggers kan ellers overlappe og
-// give fx duplikerede Pipedrive-noter (begge ser "ingen note endnu").
+// give fx duplikerede CRM-poster (begge ser "ingen post endnu").
 // ============================================================
 function withLock(name, fn) {
   let running = false;
@@ -58,7 +85,7 @@ function withLock(name, fn) {
     }
     running = true;
     try {
-      // Én kørsel: tællere for Pipedrive-kald, cache og fejl, én logline til
+      // Én kørsel: tællere for CRM-kald, cache og fejl, én logline til
       // sidst og tjek af 401-alarmen (services/runStats.js, services/alerts.js)
       return await runStats.run(name, () => fn(...args), { onEnd: (stats) => alerts.endRun(stats) });
     } finally {
@@ -67,12 +94,9 @@ function withLock(name, fn) {
   };
 }
 
-// Returnerer { personId, latestDealId } ved match, null ved "ingen match" og
-// { deferred: true } når opslaget er udskudt (Pipedrive på pause, fejl eller
-// loftet på 25 opslag i kørslen). Udskudte opslag prøves igen næste kørsel.
-async function lookupPerson(phoneNumber) {
-  return phoneCache.lookup(phoneNumber);
-}
+// lookupPerson giver { personId, latestDealId, … } ved match, null ved "ingen
+// match" og { deferred: true } når opslaget er udskudt (CRM'et på pause, fejl
+// eller loftet på 25 opslag i kørslen). Udskudte opslag prøves igen næste kørsel.
 
 // Relatel giver 50 opkald som standard. Efter nedetid kan der være flere.
 const POLL_LIMIT = 200;
@@ -91,8 +115,8 @@ async function pollNewCalls() {
     console.warn('[Poll] Relatel returnerede ' + POLL_LIMIT + ' opkald (loftet) — der kan være flere');
   }
 
-  // Opkald, der ikke blev færdige, fordi Pipedrive holdt pause eller loftet på
-  // 25 opslag var nået, holder markøren tilbage, så de hentes igen næste gang.
+  // Opkald, der ikke blev færdige, fordi det primære CRM holdt pause eller loftet
+  // på 25 opslag var nået, holder markøren tilbage, så de hentes igen næste gang.
   // Før rykkede markøren altid frem, og opkald uden optagelse kom aldrig i Pipedrive.
   let holdFrom = null;
   const holdCall = (nc) => {
@@ -105,10 +129,10 @@ async function pollNewCalls() {
       const nc = relatel.normalizeCall(rc);
       if (!nc.phone_number) continue;
 
-      // Allerede i Pipedrive eller med optagelse: spring enkelt-opslaget i Relatel over
+      // Allerede i det primære CRM eller med optagelse: spring enkelt-opslaget i Relatel over
       // (vigtigt når markøren holdes tilbage, og de samme opkald hentes igen)
       const known = calls.getByUuid(nc.relatel_uuid);
-      const knownDone = known && (known.recording_url || known.pipedrive_activity_id || known.pipedrive_note_id);
+      const knownDone = known && (known.recording_url || crm.hasRecord(P, known));
       if (!nc.recording_url && nc.relatel_uuid && !knownDone) {
         try {
           const fullCall = await relatel.getCall(nc.relatel_uuid);
@@ -140,67 +164,78 @@ async function pollNewCalls() {
           ORDER BY created_at DESC LIMIT 1
         `).get(nc.phone_number);
         if (temp) {
-          if (temp.pipedrive_person_id || temp.pipedrive_deal_id) {
-            db.prepare(`
-              UPDATE calls SET
-                pipedrive_person_id = COALESCE(pipedrive_person_id, ?),
-                pipedrive_deal_id   = COALESCE(pipedrive_deal_id, ?)
-              WHERE relatel_uuid = ?
-            `).run(temp.pipedrive_person_id, temp.pipedrive_deal_id, nc.relatel_uuid);
+          if (temp[PC.person] || temp[PC.deal]) {
+            setColumns('calls', 'relatel_uuid', nc.relatel_uuid,
+              { [PC.person]: temp[PC.person], [PC.deal]: temp[PC.deal] },
+              { coalesce: [PC.person, PC.deal] });
             console.log('[Poll] Click-to-call-kobling overført til ' + nc.relatel_uuid);
             // Nummeret er nu koblet til en person — ryd evt. "ingen match" i cachen
-            if (temp.pipedrive_person_id) phoneCache.remember(nc.phone_number, temp.pipedrive_person_id, temp.pipedrive_deal_id);
+            if (temp[PC.person]) crm.remember(P, nc.phone_number, temp[PC.person], temp[PC.deal]);
           }
           db.prepare("DELETE FROM calls WHERE relatel_uuid = ?").run(temp.relatel_uuid);
         }
       }
 
       const existing = calls.getByUuid(nc.relatel_uuid);
-      if (existing && (existing.pipedrive_note_id || existing.pipedrive_activity_id)) continue;
-
-      // Brug eksisterende kobling (fx fra click-to-call) før telefon-opslag
-      let personId = (existing && existing.pipedrive_person_id) || null;
-      let dealId = (existing && existing.pipedrive_deal_id) || null;
-      if (!personId) {
-        const lookup = await lookupPerson(nc.phone_number);
-        if (lookup && lookup.personId) {
-          personId = lookup.personId;
-          dealId = dealId || lookup.latestDealId;
-        } else if (lookup && lookup.deferred) {
-          holdCall(nc);
-        }
-      }
-      if (!personId) continue;
-
-      const activityId = await pipedrive.createCallActivity({
-        personId,
-        dealId,
-        callData: {
-          direction: nc.direction,
-          phoneNumber: nc.phone_number,
-          startedAt: nc.started_at,
-          durationSec: nc.duration_sec,
-        },
-      });
-      if (activityId) {
-        db.prepare('UPDATE calls SET pipedrive_activity_id = ?, pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
-          .run(activityId, personId, dealId, nc.relatel_uuid);
-        console.log('[Poll] Opkaldsaktivitet oprettet (aktivitet ' + activityId + ') for ' + nc.phone_number);
-      } else if (pipedrive.isRateLimited()) {
-        holdCall(nc);
-      }
+      await syncPrimaryCall(nc, existing, holdCall);
+      await syncShadowCall(nc);
     }
   } finally {
     const marker = holdFrom
       ? new Date(Math.min(holdFrom - 1000, Date.parse(checkTime))).toISOString()
       : checkTime;
     state.set('last_call_check', marker);
-    if (holdFrom) console.log('[Poll] Opkald venter på Pipedrive — markøren holdes på ' + marker);
+    if (holdFrom) console.log('[Poll] Opkald venter på ' + P.label + ' — markøren holdes på ' + marker);
   }
 }
 
+// Opkaldet i det primære CRM. Kun dette skridt kan holde markøren tilbage.
+async function syncPrimaryCall(nc, existing, holdCall) {
+  if (existing && crm.hasRecord(P, existing)) return;
+
+  // Brug eksisterende kobling (fx fra click-to-call) før telefon-opslag
+  let match = crm.matchFromRow(P, existing);
+  if (!match) {
+    const lookup = await lookupPerson(nc.phone_number);
+    if (lookup && lookup.personId) {
+      match = lookup;
+    } else if (lookup && lookup.deferred) {
+      holdCall(nc);
+    } else if (lookup === null) {
+      await maybeUnknownNumberTask(P, nc);
+    }
+  }
+  if (!match) return;
+
+  const recordId = await P.upsertCallRecord({ row: { ...(existing || {}), ...nc }, match });
+  if (recordId) {
+    setColumns('calls', 'relatel_uuid', nc.relatel_uuid, { [PC.record]: recordId, ...crm.matchColumns(P, match) });
+    console.log('[Poll] Opkald lagt i ' + P.label + ' (' + recordId + ') for ' + nc.phone_number);
+  } else if (P.isPaused()) {
+    holdCall(nc);
+  }
+}
+
+// Dual: samme opkald i Twenty som skygge. Holder aldrig markøren tilbage; et
+// opkald, skyggen ikke nåede, kommer med ved analysen eller backfill-scriptet.
+async function syncShadowCall(nc) {
+  await crm.shadowRun('opkald', async (S) => {
+    const row = calls.getByUuid(nc.relatel_uuid);
+    if (!row || row[S.cols.record]) return;
+    let match = crm.matchFromRow(S, row);
+    if (!match) {
+      const lookup = await crm.lookup(S, nc.phone_number);
+      if (lookup === null) await maybeUnknownNumberTask(S, nc);
+      if (!lookup || !lookup.personId) return;
+      match = lookup;
+    }
+    const id = await S.upsertCallRecord({ row, match });
+    if (id) setColumns('calls', 'relatel_uuid', nc.relatel_uuid, { [S.cols.record]: id, ...crm.matchColumns(S, match) });
+  });
+}
+
 // ============================================================
-// GDPR + omkostninger: transskribér KUN opkald med Pipedrive-match.
+// GDPR + omkostninger: transskribér KUN opkald med match i det primære CRM.
 // Umatchede opkald (privatopkald, forkerte numre, leverandører...)
 // venter i UNMATCHED_WAIT_DAYS på et match (fx nyt lead der oprettes)
 // og markeres derefter 'skipped' — de transskriberes aldrig.
@@ -208,36 +243,32 @@ async function pollNewCalls() {
 const UNMATCHED_WAIT_DAYS = 7;
 
 async function matchUnmatchedPendingCalls() {
-  if (pipedrive.isRateLimited()) {
-    console.log('[Match] Pipedrive rate limit ramt for nylig — springer over');
+  if (P.isPaused()) {
+    console.log('[Match] ' + P.label + ' rate limit ramt for nylig — springer over');
     return;
   }
   const unmatched = db.prepare(`
     SELECT relatel_uuid, phone_number, ended_at FROM calls
     WHERE transcription_status = 'pending'
-      AND pipedrive_person_id IS NULL
+      AND ${PC.person} IS NULL
       AND recording_url IS NOT NULL
       AND ended_at IS NOT NULL
     ORDER BY ended_at DESC
     LIMIT 10
   `).all();
 
-  // Flere opkald fra samme nummer giver kun ét Pipedrive-kald: det første
+  // Flere opkald fra samme nummer giver kun ét CRM-kald: det første
   // opslag lander i phone_lookups, de næste rammer cachen.
   for (const c of unmatched) {
     if (!c.phone_number) continue;
-    if (pipedrive.isRateLimited()) {
-      console.warn('[Match] Pipedrive rate limit — stopper kørslen');
+    if (P.isPaused()) {
+      console.warn('[Match] ' + P.label + ' rate limit — stopper kørslen');
       break;
     }
     const lookup = await lookupPerson(c.phone_number);
     if (lookup && lookup.personId) {
-      db.prepare(`
-        UPDATE calls SET
-          pipedrive_person_id = ?,
-          pipedrive_deal_id   = COALESCE(pipedrive_deal_id, ?)
-        WHERE relatel_uuid = ?
-      `).run(lookup.personId, lookup.latestDealId, c.relatel_uuid);
+      const v = crm.matchColumns(P, lookup);
+      setColumns('calls', 'relatel_uuid', c.relatel_uuid, v, { coalesce: Object.keys(v).filter((k) => k !== PC.person) });
       console.log('[Match] Sent match: ' + c.phone_number + ' -> person ' + lookup.personId + ' — transskriberes nu');
     }
   }
@@ -247,7 +278,7 @@ function expireUnmatchedCalls() {
   const result = db.prepare(`
     UPDATE calls SET transcription_status = 'skipped'
     WHERE transcription_status = 'pending'
-      AND pipedrive_person_id IS NULL
+      AND ${PC.person} IS NULL
       AND ended_at IS NOT NULL
       AND datetime(ended_at) < datetime('now', '-' || ? || ' days')
   `).run(UNMATCHED_WAIT_DAYS);
@@ -260,7 +291,7 @@ async function processTranscriptions() {
   expireUnmatchedCalls();
   await matchUnmatchedPendingCalls();
 
-  const pending = calls.getPendingTranscriptions();
+  const pending = calls.getPendingTranscriptions(PC.person);
   if (pending.length === 0) return;
   console.log('[AI] Behandler ' + pending.length + ' opkald...');
 
@@ -321,7 +352,7 @@ async function processTranscriptions() {
 
       // ============================================================
       // SALGSCOACHING — kun når der var en rigtig samtale. Best effort:
-      // fejler coachingen, lander analysen alligevel i Pipedrive.
+      // fejler coachingen, lander analysen alligevel i CRM'et.
       // ============================================================
       let coachingResult = null;
       if (analysisResult && !isUnanswered) {
@@ -357,59 +388,23 @@ async function processTranscriptions() {
         topics,
         insights: analysisResult,
         coaching: coachingResult,
+        isUnanswered,
       };
+      const transcriptText = diarizedTranscription || transcription;
 
-      // Re-try Pipedrive-lookup hvis vi ikke fik fat i personen ved første poll
+      // Re-try opslag i det primære CRM, hvis vi ikke fik fat i personen ved første poll
       // (typisk fordi lead først blev konverteret til person efter opkaldet)
-      let personId = call.pipedrive_person_id;
-      let dealId = call.pipedrive_deal_id;
-      if (!personId && !call.pipedrive_note_id && !call.pipedrive_activity_id && call.phone_number) {
+      let match = crm.matchFromRow(P, call);
+      if (!match && !crm.hasRecord(P, call) && call.phone_number) {
         const lookup = await lookupPerson(call.phone_number);
         if (lookup && lookup.personId) {
-          personId = lookup.personId;
-          dealId = lookup.latestDealId || dealId;
-          db.prepare('UPDATE calls SET pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
-            .run(personId, dealId, call.relatel_uuid);
-          console.log('[AI] Sent-link til Pipedrive lykkedes for ' + call.phone_number + ' -> personId ' + personId);
+          match = lookup;
+          setColumns('calls', 'relatel_uuid', call.relatel_uuid, crm.matchColumns(P, match));
+          console.log('[AI] Sent-link til ' + P.label + ' lykkedes for ' + call.phone_number + ' -> personId ' + match.personId);
         }
       }
 
-      // ============================================================
-      // UDFYLD TOMME FELTER i Pipedrive (antal ansatte, fag, systemer,
-      // rolle, anledning, indvending) — og skriv i noten, hvad der blev
-      // gjort, så Jeppe kan se det. Best effort.
-      // ============================================================
-      if (analysisResult && personId && !pipedrive.isRateLimited()) {
-        try {
-          const af = await autofillFromCall({ personId, dealId, analysis: analysisResult });
-          callData.pipedrive = { personName: af.personName, dealTitle: af.dealTitle, changes: af.changes };
-          if (af.changes.length) console.log('[Pipedrive] Udfyldte tomme felter: ' + af.changes.map((c) => c.felt).join(', '));
-        } catch (afErr) {
-          console.error('[Pipedrive] Autoudfyldning fejlede:', afErr.message);
-        }
-      }
-
-      if (call.pipedrive_activity_id) {
-        console.log('[AI] Opdaterer Pipedrive-aktivitet ' + call.pipedrive_activity_id + ' med transskription...');
-        await pipedrive.updateCallActivity(call.pipedrive_activity_id, { callData, dealId });
-      } else if (call.pipedrive_note_id) {
-        // Opkald fra før 24/9 2026 har en note — den opdateres fortsat
-        console.log('[AI] Opdaterer Pipedrive-note ' + call.pipedrive_note_id + ' med transskription...');
-        await pipedrive.updateNote(call.pipedrive_note_id, { callData });
-      } else if (personId || dealId) {
-        const newActivityId = await pipedrive.createCallActivity({
-          personId,
-          dealId,
-          callData,
-        });
-        if (newActivityId) {
-          db.prepare('UPDATE calls SET pipedrive_activity_id = ? WHERE relatel_uuid = ?')
-            .run(newActivityId, call.relatel_uuid);
-          console.log('[AI] Ny Pipedrive-opkaldsaktivitet oprettet: ' + newActivityId);
-        }
-      } else {
-        console.log('[AI] Ingen Pipedrive-match for ' + call.phone_number + ' — note ikke oprettet');
-      }
+      await writeAnalysis(P, call, match, callData, { analysisResult, coachingResult, transcriptText });
 
       calls.updateTranscription(call.relatel_uuid, {
         status: 'done',
@@ -446,6 +441,20 @@ async function processTranscriptions() {
         }
       }
 
+      // Dual: samme analyse i Twenty som skygge (fejl her rører ikke Pipedrive)
+      await crm.shadowRun('analyse', async (S) => {
+        const row = calls.getByUuid(call.relatel_uuid);
+        let sMatch = crm.matchFromRow(S, row);
+        if (!sMatch) {
+          const lookup = await crm.lookup(S, call.phone_number);
+          if (!lookup || !lookup.personId) return;
+          sMatch = lookup;
+          setColumns('calls', 'relatel_uuid', call.relatel_uuid, crm.matchColumns(S, sMatch));
+        }
+        const { pipedrive: _pd, ...shadowData } = callData;
+        await writeAnalysis(S, row, sMatch, shadowData, { analysisResult, coachingResult, transcriptText });
+      });
+
       // Nulstil fejl-tilstand ved success
       db.prepare("UPDATE calls SET transcription_error = NULL WHERE relatel_uuid = ?")
         .run(call.relatel_uuid);
@@ -457,6 +466,44 @@ async function processTranscriptions() {
         .run(err.message.substring(0, 500), call.relatel_uuid);
     }
   }
+}
+
+// ============================================================
+// Analysen ud i ét CRM: udfyld tomme felter → opdatér/opret posten →
+// (Twenty) signaler. Rækkefølgen for Pipedrive er som før.
+// ============================================================
+async function writeAnalysis(adapter, row, match, callData, { analysisResult, coachingResult, transcriptText }) {
+  const personId = match && match.personId;
+
+  // UDFYLD TOMME FELTER (antal ansatte, fag, systemer, rolle, anledning,
+  // indvending …) — og skriv i noten, hvad der blev gjort. Best effort.
+  let af = null;
+  if (analysisResult && personId && !adapter.isPaused()) {
+    try {
+      af = await adapter.autofill({ match, analysis: analysisResult, coaching: coachingResult, row });
+      // callData.pipedrive → blokken "Pipedrive (skema v1)"; callData.twenty → "Twenty (skema v1)"
+      const block = { personName: af.personName, dealTitle: af.dealTitle, changes: af.changes };
+      if (af.stageChange) block.stageChange = af.stageChange;
+      callData[adapter.name] = block;
+      if (af.changes.length) console.log('[' + adapter.label + '] Udfyldte tomme felter: ' + af.changes.map((c) => c.felt).join(', '));
+    } catch (afErr) {
+      console.error('[' + adapter.label + '] Autoudfyldning fejlede:', afErr.message);
+    }
+  }
+
+  const rec = await adapter.completeCallRecord({
+    row, match: match || {}, callData, transcript: transcriptText,
+  });
+  if (rec && rec.recordId && (rec.created || !row[adapter.cols.record])) {
+    setColumns('calls', 'relatel_uuid', row.relatel_uuid, { [adapter.cols.record]: rec.recordId });
+  }
+
+  // Signaler (kun Twenty): én gang pr. opkald
+  if (adapter.afterAnalysis && rec && rec.recordId && analysisResult && !row.twenty_signaler_at) {
+    const n = await adapter.afterAnalysis({ recordId: rec.recordId, match, analysis: analysisResult, autofill: af });
+    if (n !== null) setColumns('calls', 'relatel_uuid', row.relatel_uuid, { twenty_signaler_at: new Date().toISOString() });
+  }
+  return rec;
 }
 
 // ============================================================
@@ -483,7 +530,7 @@ async function autoRetryFailed() {
 
 // ============================================================
 // CATCH-UP: Hent alle opkald fra sidste N dage og sæt dem
-// i kø til transskription + Pipedrive-sync. Bruges til at
+// i kø til transskription + CRM-sync. Bruges til at
 // indhente tabte opkald efter fx et servernedbrud.
 // ============================================================
 async function backfillCalls(days = 7) {
@@ -527,48 +574,37 @@ async function backfillCalls(days = 7) {
     if (!existing) continue;
 
     // Tjek om opkaldet allerede er fuldt processeret
-    if ((existing.pipedrive_note_id || existing.pipedrive_activity_id) && existing.transcription_status === 'done' && existing.transcription) {
+    if (crm.hasRecord(P, existing) && existing.transcription_status === 'done' && existing.transcription) {
       alreadyDone++;
+      await syncShadowCall(nc);
       continue;
     }
 
     imported++;
 
-    // Prøv at link til Pipedrive hvis vi ikke har person_id endnu
-    let personId = existing.pipedrive_person_id;
-    let dealId = existing.pipedrive_deal_id;
-    if (!personId) {
+    // Prøv at linke til det primære CRM, hvis vi ikke har person_id endnu
+    let match = crm.matchFromRow(P, existing);
+    if (!match) {
       const lookup = await lookupPerson(nc.phone_number);
       if (lookup && lookup.personId) {
-        personId = lookup.personId;
-        dealId = lookup.latestDealId || null;
-        db.prepare('UPDATE calls SET pipedrive_person_id = ?, pipedrive_deal_id = ? WHERE relatel_uuid = ?')
-          .run(personId, dealId, nc.relatel_uuid);
+        match = lookup;
+        setColumns('calls', 'relatel_uuid', nc.relatel_uuid, crm.matchColumns(P, match));
         linked++;
       }
     }
 
-    // Opret initial note i Pipedrive hvis der er match og ingen note endnu
+    // Opret opkaldet i CRM'et hvis der er match og ingen post endnu
     // (transskription tilføjes senere via processTranscriptions hvis recording findes)
     let notesCreated = 0;
-    if (personId && !existing.pipedrive_note_id && !existing.pipedrive_activity_id) {
-      const noteId = await pipedrive.createCallActivity({
-        personId,
-        dealId,
-        callData: {
-          direction: nc.direction,
-          phoneNumber: nc.phone_number,
-          startedAt: nc.started_at,
-          durationSec: nc.duration_sec,
-        },
-      });
-      if (noteId) {
-        db.prepare('UPDATE calls SET pipedrive_activity_id = ? WHERE relatel_uuid = ?')
-          .run(noteId, nc.relatel_uuid);
+    if (match && !crm.hasRecord(P, existing)) {
+      const recordId = await P.upsertCallRecord({ row: { ...existing, ...nc }, match });
+      if (recordId) {
+        setColumns('calls', 'relatel_uuid', nc.relatel_uuid, { [PC.record]: recordId });
         notesCreated++;
-        console.log('[Backfill] Opkaldsaktivitet oprettet (' + noteId + ') for ' + nc.phone_number);
+        console.log('[Backfill] Opkald lagt i ' + P.label + ' (' + recordId + ') for ' + nc.phone_number);
       }
     }
+    await syncShadowCall(nc);
 
     // Sæt transcription_status til pending hvis der er en recording og den ikke er done
     if (nc.recording_url && existing.transcription_status !== 'done') {
@@ -645,7 +681,7 @@ async function retryMissingRecordings() {
 
 // ============================================================
 // OPTIMERET: Brug datofilter saa vi kun henter nye SMS'er
-// + gem beskeder ALTID i DB (ogsaa uden Pipedrive-match)
+// + gem beskeder ALTID i DB (ogsaa uden CRM-match)
 // saa de ikke genbehandles naeste minut
 // ============================================================
 async function fetchNewMessages() {
@@ -679,7 +715,7 @@ async function fetchNewMessages() {
     const nm = relatel.normalizeMessage(msg);
     if (!nm.phone_number) continue;
 
-    // Gem ALTID i DB saa beskeden ikke genbehandles — koblingen til Pipedrive
+    // Gem ALTID i DB saa beskeden ikke genbehandles — koblingen til CRM'et
     // sker i linkUnmatchedMessages() nedenfor, som også samler ældre SMS op
     messages.upsert({
       relatel_id: nm.relatel_id,
@@ -697,47 +733,42 @@ async function fetchNewMessages() {
 }
 
 // ============================================================
-// SMS uden Pipedrive-note: prøv at koble igen i UNMATCHED_WAIT_DAYS.
-// Samme regel som opkald — en SMS fra et nyt nummer får sin note, hvis
-// personen oprettes i Pipedrive inden for vinduet. Dækker også SMS, hvor
-// personen blev fundet, men note-oprettelsen fejlede.
+// SMS uden post i CRM'et: prøv at koble igen i UNMATCHED_WAIT_DAYS.
+// Samme regel som opkald — en SMS fra et nyt nummer kommer med, hvis
+// personen oprettes i CRM'et inden for vinduet. Dækker også SMS, hvor
+// personen blev fundet, men oprettelsen fejlede.
 // ============================================================
 async function linkUnmatchedMessages() {
+  await linkMessagesFor(P);
+  await crm.shadowRun('SMS', (S) => linkMessagesFor(S));
+}
+
+async function linkMessagesFor(adapter) {
+  const c = adapter.cols;
   const cutoff = new Date(Date.now() - UNMATCHED_WAIT_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const notSynced = [c.record, c.legacyNote].filter(Boolean).map((col) => `${assertColumn(col)} IS NULL`).join(' AND ');
   const pending = db.prepare(`
     SELECT * FROM messages
-    WHERE pipedrive_note_id IS NULL
-      AND pipedrive_activity_id IS NULL
+    WHERE ${notSynced}
       AND sent_at >= ?
     ORDER BY sent_at ASC
     LIMIT 50
   `).all(cutoff);
 
   for (const m of pending) {
-    let personId = m.pipedrive_person_id;
-    let dealId = m.pipedrive_deal_id;
-    if (!personId) {
-      const lookup = await lookupPerson(m.phone_number);
+    let match = crm.matchFromRow(adapter, m);
+    if (!match) {
+      const lookup = await crm.lookup(adapter, m.phone_number);
       if (!lookup || !lookup.personId) continue;
-      personId = lookup.personId;
-      dealId = lookup.latestDealId;
-      db.prepare('UPDATE messages SET pipedrive_person_id = ?, pipedrive_deal_id = COALESCE(pipedrive_deal_id, ?) WHERE relatel_id = ?')
-        .run(personId, dealId, m.relatel_id);
+      match = lookup;
+      const v = crm.matchColumns(adapter, match);
+      setColumns('messages', 'relatel_id', m.relatel_id, v, { coalesce: Object.keys(v).filter((k) => k !== c.person) });
     }
 
-    const { activityId, noteId } = await pipedrive.createSmsRecord({
-      personId,
-      dealId,
-      smsData: {
-        direction: m.direction,
-        phoneNumber: m.phone_number,
-        body: m.body,
-        sentAt: m.sent_at,
-      },
-    });
-    if (activityId) {
-      db.prepare('UPDATE messages SET pipedrive_activity_id = ? WHERE relatel_id = ?').run(activityId, m.relatel_id);
-      console.log('[SMS] SMS-aktivitet oprettet (aktivitet ' + activityId + ') for ' + m.phone_number);
+    const { recordId, noteId } = await adapter.upsertSms({ row: m, match });
+    if (recordId) {
+      setColumns('messages', 'relatel_id', m.relatel_id, { [c.record]: recordId });
+      console.log('[SMS] SMS lagt i ' + adapter.label + ' (' + recordId + ') for ' + m.phone_number);
     } else if (noteId) {
       messages.setNoteId(m.relatel_id, noteId);
       console.log('[SMS] SMS-note oprettet som nødløsning (note ' + noteId + ') for ' + m.phone_number);
@@ -768,7 +799,10 @@ async function fetchNewNotes() {
       if (freshComments.length === 0) continue;
 
       const lookup = await lookupPerson(contact.number);
-      if (!lookup || !lookup.personId) continue;
+      const sLookup = await crm.shadowRun('note-opslag', (S) => crm.lookup(S, contact.number));
+      const pOk = !!(lookup && lookup.personId);
+      const sOk = !!(sLookup && sLookup.personId);
+      if (!pOk && !sOk) continue;
       totalFresh += freshComments.length;
 
       for (const comment of freshComments) {
@@ -776,36 +810,40 @@ async function fetchNewNotes() {
         if (!noteId) continue;
 
         const existing = relatelNotes.getById(noteId);
-        if (existing && existing.pipedrive_note_id) continue;
+        const needPrimary = pOk && !(existing && existing[PC.noteRecord]);
+        const needShadow = sOk && crm.shadow && !(existing && existing[crm.shadow.cols.noteRecord]);
+        if (!needPrimary && !needShadow) continue;
 
         const body = comment.body || comment.text || comment.comment || '';
         const author = comment.author || comment.user || null;
         const createdAt = comment.created_at || null;
+        const note = {
+          relatel_id: noteId,
+          author: (author && typeof author === 'object') ? (author.name || author.email || null) : author,
+          body,
+          created_at_rel: createdAt,
+        };
 
-        const pdNoteId = await pipedrive.createRelatelNote({
-          personId: lookup.personId,
-          dealId: lookup.latestDealId,
-          noteData: {
-            author: (author && typeof author === 'object') ? (author.name || author.email || null) : author,
-            body,
-            createdAt,
-          },
-        });
-
-        relatelNotes.upsert({
+        const row = {
           relatel_id: noteId,
           relatel_contact_id: String(contact.id),
           phone_number: contact.number,
           author: (author && typeof author === 'object') ? (author.name || null) : author,
           body,
           created_at_rel: createdAt,
-          pipedrive_person_id: lookup.personId,
-          pipedrive_note_id: pdNoteId,
-        });
-
-        if (pdNoteId) {
-          console.log('[Noter] Note oprettet (note ' + pdNoteId + ') for kontakt ' + lookup.personId);
+        };
+        if (needPrimary) {
+          const recId = await P.upsertRelatelNote({ note, match: lookup });
+          row[PC.notePerson] = lookup.personId;
+          row[PC.noteRecord] = recId;
+          if (recId) console.log('[Noter] Note lagt i ' + P.label + ' (' + recId + ') for kontakt ' + lookup.personId);
         }
+        if (needShadow) {
+          const sId = await crm.shadowRun('note', (S) => S.upsertRelatelNote({ note, match: sLookup }));
+          row[crm.shadow.cols.notePerson] = sLookup.personId;
+          row[crm.shadow.cols.noteRecord] = sId;
+        }
+        relatelNotes.upsert(row);
       }
     }
     if (totalFresh > 0) {
@@ -823,8 +861,8 @@ async function fetchNewNotes() {
 // ============================================================
 async function enrichContacts() {
   try {
-    if (pipedrive.isRateLimited()) {
-      console.log('[Enrich] Pipedrive rate limit ramt for nylig — springer over');
+    if (P.isPaused()) {
+      console.log('[Enrich] ' + P.label + ' rate limit ramt for nylig — springer over');
       return;
     }
     const contacts = await relatel.getContacts({ limit: 200 });
@@ -842,37 +880,26 @@ async function enrichContacts() {
       if (lookups >= ENRICH_MAX_PER_RUN) break;
       lookups++;
 
-      // Slå op i Pipedrive — KILDE TIL SANDHED
-      const person = await pipedrive.findPersonByPhone(contact.number);
-      if (!person && pipedrive.isRateLimited()) {
-        // Ikke "ingen match" — Pipedrive afviste kaldet. Stop og prøv næste kørsel
-        console.warn('[Enrich] Pipedrive rate limit — stopper kørslen');
+      // Slå op i det primære CRM — KILDE TIL SANDHED (Twenty ved CRM_MODE=twenty)
+      const found = await P.getContactForRelatel(contact.number);
+      if (found.status === 'error') {
+        // Ikke "ingen match" — CRM'et afviste kaldet. Stop og prøv næste kørsel
+        console.warn('[Enrich] ' + P.label + ' rate limit — stopper kørslen');
         break;
       }
-      if (!person) {
-        // Ingen match i Pipedrive — lad Relatel-navnet stå som det er
-        enrichedContactIds.add(String(contact.id));
-        continue;
-      }
-
-      // Hent fulde persondetaljer (navn, firma, email)
-      const details = await pipedrive.getPersonById(person.id);
-      if (!details || !details.name) {
+      if (found.status !== 'found') {
+        // Ingen match — lad Relatel-navnet stå som det er
         enrichedContactIds.add(String(contact.id));
         continue;
       }
 
       // Byg ønsket visningsnavn: "Navn (Firma)"
-      const orgName = (details.org_id && details.org_id.name) || null;
-      const desiredName = orgName
-        ? details.name + ' (' + orgName + ')'
-        : details.name;
+      const desiredName = found.company
+        ? found.name + ' (' + found.company + ')'
+        : found.name;
+      const desiredEmail = found.email || null;
 
-      const desiredEmail = (details.email && details.email.length > 0)
-        ? details.email[0].value
-        : null;
-
-      // Hvis Relatel-kontakten allerede matcher Pipedrive → skip update
+      // Hvis Relatel-kontakten allerede matcher CRM'et → skip update
       // (undgår at spamme Relatel API med unødvendige opdateringer)
       const currentName = (contact.name || '').trim();
       const currentEmail = (contact.email || '').trim();
@@ -882,7 +909,7 @@ async function enrichContacts() {
         continue;
       }
 
-      // Opdatér Relatel-kontakt med Pipedrive-data (overskriver evt. forkerte navne)
+      // Opdatér Relatel-kontakt med CRM-data (overskriver evt. forkerte navne)
       try {
         await relatel.updateContact(contact.id, {
           name: desiredName,
@@ -900,7 +927,7 @@ async function enrichContacts() {
     }
 
     if (enriched > 0) {
-      console.log('[Enrich] Opdaterede ' + enriched + ' kontakter i Relatel (Pipedrive er sandhed)');
+      console.log('[Enrich] Opdaterede ' + enriched + ' kontakter i Relatel (' + P.label + ' er sandhed)');
     }
     if (inSync > 0) {
       console.log('[Enrich] ' + inSync + ' kontakter er allerede i sync');
@@ -923,6 +950,7 @@ const jobs = {
   retryMissingRecordings: withLock('Retry', retryMissingRecordings),
   backfillCalls:          withLock('Backfill', backfillCalls),
   autoRetryFailed:        withLock('AutoRetry', autoRetryFailed),
+  purgeTwentyTranscripts: withLock('TwentyRetention', purgeTwentyTranscripts),
 };
 
 // ============================================================
@@ -968,6 +996,20 @@ function cleanupOldTranscriptions() {
   }
 }
 
+// ============================================================
+// GDPR-retention i Twenty: tøm samtale.transskript på samtaler med
+// kilde=DIALER ældre end 12 mdr. Kører kun ved CRM_MODE=dual|twenty.
+// ============================================================
+async function purgeTwentyTranscripts() {
+  if (!crm.twentyActive) return null;
+  try {
+    return await crm.adapters.twenty.purgeOldTranscripts({ state, months: TRANSCRIPT_RETENTION_MONTHS });
+  } catch (e) {
+    console.error('[Retention] Twenty-oprydning fejlede:', e.message);
+    return null;
+  }
+}
+
 function start() {
   // Reset alle opkald der hænger i 'processing' (fx pga. tidligere crash/restart)
   // Ellers ville de aldrig blive plukket op igen af processTranscriptions
@@ -989,6 +1031,13 @@ function start() {
   // GDPR-retention: ryd gamle rå transskriptioner ved boot + dagligt kl. 03:45
   cleanupOldTranscriptions();
   cron.schedule('0 45 3 * * *', cleanupOldTranscriptions);
+
+  // Samme regel for transskripter i Twenty: dagligt kl. 03:50
+  if (crm.twentyActive) {
+    cron.schedule('0 50 3 * * *', async () => {
+      try { await jobs.purgeTwentyTranscripts(); } catch (e) { console.error('[Retention] Fejl:', e.message); }
+    });
+  }
 
   // ============================================================
   // OPTIMERET polling-cadence — reducerer unødvendige API-kald
@@ -1037,6 +1086,7 @@ function start() {
     try { await jobs.autoRetryFailed(); } catch (e) { console.error('[AutoRetry] Fejl:', e.message); }
   });
 
+  console.log('[CRM] CRM_MODE=' + crm.mode + ' — primær: ' + P.label + (crm.shadow ? ', skygge: ' + crm.shadow.label : ''));
   console.log('[Poll] Cron-jobs startet — webhooks ' + (webhooksOn ? 'TIL (opkald+SMS: sikkerhedsnet hvert 15. min)' : 'FRA (opkald: 60s, SMS: 5min)') + ', transskription: 2min, retry: 3min, noter: 15min, berigelse: 30min, auto-retry: 10min');
 }
 
@@ -1051,4 +1101,5 @@ module.exports = {
   retryMissingRecordings: jobs.retryMissingRecordings,
   backfillCalls: jobs.backfillCalls,
   autoRetryFailed: jobs.autoRetryFailed,
+  purgeTwentyTranscripts: jobs.purgeTwentyTranscripts,
 };

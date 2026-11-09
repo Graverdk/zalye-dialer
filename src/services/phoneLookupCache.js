@@ -1,22 +1,30 @@
 // ============================================================
-// Telefonopslag i Pipedrive med cache i SQLite (tabellen phone_lookups,
-// nøglet på de sidste 8 cifre som i searchPersonByPhone). Cachen overlever
-// genstart og deploy.
+// Telefonopslag i et CRM med cache i SQLite (tabellen phone_lookups,
+// nøglet på (crm, sidste 8 cifre)). Cachen overlever genstart og deploy,
+// og Pipedrive og Twenty har hver sine rækker.
 //
 // - Match caches i 10 min.
-// - "Ingen match" caches i 24 timer: højst ét opslag pr. ukendt nummer pr.
-//   døgn. Et nyt opkald efter de 24 timer giver et frisk opslag.
+// - "Ingen match" caches i 15 min den første time efter første miss (så en
+//   kontakt, der lige er oprettet efter kaldet, fanges hurtigt — vigtigt i
+//   dual, hvor Twenty kan halte efter Pipedrive), og derefter i 24 timer.
+//   Højst 4-5 opslag den første time og derefter ét pr. døgn pr. nummer pr. CRM.
+//   Et nyt opslag efter de 24 timer starter en ny "første time".
 // - Rækken ryddes/overskrives, når nummeret matches (her eller via
-//   click-to-call fra Pipedrive).
+//   click-to-call).
 // - 401, 429, netværks- og andre fejl er IKKE "ingen match" og caches
 //   aldrig. Opslaget udskydes i stedet.
-// - Højst 25 opslag pr. kørsel. Resten udskydes til næste kørsel, så en
-//   indhentning efter nedetid ikke bliver en løkke mod Pipedrive.
+// - Højst 25 opslag pr. kørsel pr. CRM. Resten udskydes til næste kørsel,
+//   så en indhentning efter nedetid ikke bliver en løkke mod CRM'et.
+//
+// Id'er gemmes som TEXT (Twenty bruger UUID). Pipedrive-adapteren giver
+// en fromDb, der laver dem om til tal igen, så Pipedrive-flowet er uændret.
 // ============================================================
 const runStats = require('./runStats');
 
 const POSITIVE_TTL_MS = 10 * 60 * 1000;
 const NEGATIVE_TTL_MS = 24 * 60 * 60 * 1000;
+const NEGATIVE_FIRST_HOUR_TTL_MS = 15 * 60 * 1000;
+const FIRST_HOUR_MS = 60 * 60 * 1000;
 const MAX_LOOKUPS_PER_RUN = 25;
 const CACHE_HIT_LOG_MS = 60 * 60 * 1000;
 
@@ -24,42 +32,93 @@ function last8(phone) {
   return String(phone || '').replace(/\D/g, '').slice(-8);
 }
 
+// Tællernavne i runStats pr. CRM (Pipedrive beholder de oprindelige navne)
+const STAT_KEYS = {
+  pipedrive: { lookups: 'lookups', deferred: 'deferred', cacheHits: 'cacheHits', stop: 'stopPipedrive' },
+  twenty: { lookups: 'twentyLookups', deferred: 'twentyDeferred', cacheHits: 'twentyCacheHits', stop: 'stopTwenty' },
+};
+
+// Før 11/2026 var tabellen nøglet på number_last8 alene med INTEGER-id'er.
+// Den flyttes til (crm, number_last8) med TEXT-id'er; gamle rækker er Pipedrive.
+function ensureTable(db) {
+  const cols = db.prepare('PRAGMA table_info(phone_lookups)').all();
+  const create = (name) => db.exec(`CREATE TABLE IF NOT EXISTS ${name} (
+    crm            TEXT NOT NULL DEFAULT 'pipedrive',
+    number_last8   TEXT NOT NULL,
+    person_id      TEXT,
+    latest_deal_id TEXT,
+    company_id     TEXT,
+    onboarding_id  TEXT,
+    checked_at     INTEGER NOT NULL,
+    first_miss_at  INTEGER,
+    PRIMARY KEY (crm, number_last8)
+  )`);
+  if (cols.length === 0) {
+    create('phone_lookups');
+    return;
+  }
+  if (cols.some((c) => c.name === 'crm')) return;
+  db.transaction(() => {
+    create('phone_lookups_v2');
+    db.exec(`INSERT INTO phone_lookups_v2 (crm, number_last8, person_id, latest_deal_id, checked_at, first_miss_at)
+      SELECT 'pipedrive', number_last8, CAST(person_id AS TEXT), CAST(latest_deal_id AS TEXT), checked_at, first_miss_at
+      FROM phone_lookups`);
+    db.exec('DROP TABLE phone_lookups');
+    db.exec('ALTER TABLE phone_lookups_v2 RENAME TO phone_lookups');
+  })();
+  console.log('[DB] phone_lookups flyttet til nøglen (crm, number_last8)');
+}
+
+// Pipedrive-id'er er heltal — som TEXT i cachen, som tal i resten af koden
+const pipedriveId = (v) => (v === null || v === undefined ? null : (/^\d+$/.test(String(v)) ? Number(v) : v));
+const asText = (v) => (v === null || v === undefined || v === '' ? null : String(v));
+
 function createPhoneLookupCache({
   db,
+  crm = 'pipedrive',
+  label = crm === 'twenty' ? 'Twenty' : 'Pipedrive',
   search,              // async (phone) => { status: 'found'|'none'|'error', person }
-  getDeals,            // async (personId) => { latestDealId }
+  getDeals,            // async (personId, person) => { latestDealId, companyId?, onboardingId? }
   isPaused = () => false,
+  fromDb = crm === 'pipedrive' ? pipedriveId : (v) => v, // id fra DB (TEXT) → adapterens id-type
   stats = runStats.current,
   now = Date.now,
   positiveTtlMs = POSITIVE_TTL_MS,
   negativeTtlMs = NEGATIVE_TTL_MS,
+  firstHourTtlMs = NEGATIVE_FIRST_HOUR_TTL_MS,
+  firstHourMs = FIRST_HOUR_MS,
   maxLookupsPerRun = MAX_LOOKUPS_PER_RUN,
   log = console,
 }) {
-  db.exec(`CREATE TABLE IF NOT EXISTS phone_lookups (
-    number_last8   TEXT PRIMARY KEY,
-    person_id      INTEGER,
-    latest_deal_id INTEGER,
-    checked_at     INTEGER NOT NULL,
-    first_miss_at  INTEGER
-  )`);
-  const getRow = db.prepare('SELECT * FROM phone_lookups WHERE number_last8 = ?');
-  const putNone = db.prepare(`INSERT INTO phone_lookups (number_last8, person_id, latest_deal_id, checked_at, first_miss_at)
-    VALUES (?, NULL, NULL, ?, ?)
-    ON CONFLICT(number_last8) DO UPDATE SET
-      person_id = NULL, latest_deal_id = NULL, checked_at = excluded.checked_at,
-      first_miss_at = COALESCE(phone_lookups.first_miss_at, excluded.first_miss_at)`);
-  const putMatch = db.prepare(`INSERT INTO phone_lookups (number_last8, person_id, latest_deal_id, checked_at, first_miss_at)
-    VALUES (?, ?, ?, ?, NULL)
-    ON CONFLICT(number_last8) DO UPDATE SET
+  ensureTable(db);
+  const keys = STAT_KEYS[crm] || STAT_KEYS.pipedrive;
+  const getRow = db.prepare('SELECT * FROM phone_lookups WHERE crm = ? AND number_last8 = ?');
+  const putNone = db.prepare(`INSERT INTO phone_lookups (crm, number_last8, person_id, latest_deal_id, company_id, onboarding_id, checked_at, first_miss_at)
+    VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?)
+    ON CONFLICT(crm, number_last8) DO UPDATE SET
+      person_id = NULL, latest_deal_id = NULL, company_id = NULL, onboarding_id = NULL,
+      checked_at = excluded.checked_at,
+      first_miss_at = excluded.first_miss_at`);
+  const putMatch = db.prepare(`INSERT INTO phone_lookups (crm, number_last8, person_id, latest_deal_id, company_id, onboarding_id, checked_at, first_miss_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+    ON CONFLICT(crm, number_last8) DO UPDATE SET
       person_id = excluded.person_id, latest_deal_id = excluded.latest_deal_id,
+      company_id = excluded.company_id, onboarding_id = excluded.onboarding_id,
       checked_at = excluded.checked_at, first_miss_at = NULL`);
-  const del = db.prepare('DELETE FROM phone_lookups WHERE number_last8 = ?');
+  const del = db.prepare('DELETE FROM phone_lookups WHERE crm = ? AND number_last8 = ?');
   const hitLoggedAt = new Map();
 
   function deferred(s, reason) {
-    s.deferred++;
+    s[keys.deferred] = (s[keys.deferred] || 0) + 1;
     return { personId: null, latestDealId: null, deferred: true, reason };
+  }
+
+  // Pipedrive giver præcis { personId, latestDealId } som før; Twenty også virksomhed/onboarding
+  function toMatch(row) {
+    const m = { personId: fromDb(row.person_id), latestDealId: fromDb(row.latest_deal_id) };
+    if (row.company_id != null) m.companyId = row.company_id;
+    if (row.onboarding_id != null) m.onboardingId = row.onboarding_id;
+    return m;
   }
 
   async function lookup(phoneNumber) {
@@ -67,52 +126,64 @@ function createPhoneLookupCache({
     if (key.length < 8) return null;
     const s = stats();
     const t = now();
-    const row = getRow.get(key);
+    const row = getRow.get(crm, key);
 
     if (row && row.person_id && t - row.checked_at < positiveTtlMs) {
-      return { personId: row.person_id, latestDealId: row.latest_deal_id };
+      return toMatch(row);
     }
-    if (row && !row.person_id && t - row.checked_at < negativeTtlMs) {
-      s.cacheHits++;
+    // "Ingen match": 15 min i den første time efter første miss, ellers 24 timer
+    const inFirstHour = row && !row.person_id && row.first_miss_at != null && t - row.first_miss_at < firstHourMs;
+    const negTtl = inFirstHour ? firstHourTtlMs : negativeTtlMs;
+    if (row && !row.person_id && t - row.checked_at < negTtl) {
+      s[keys.cacheHits] = (s[keys.cacheHits] || 0) + 1;
       if (t - (hitLoggedAt.get(key) || 0) >= CACHE_HIT_LOG_MS) {
         hitLoggedAt.set(key, t);
         const ago = t - row.checked_at;
         const agoText = ago < 60 * 60 * 1000 ? Math.round(ago / 60000) + ' min' : Math.round(ago / 3600000) + ' t';
-        log.log('[Pipedrive] Cache: ingen match for …' + key.slice(-4) + ' (tjekket for ' + agoText + ' siden) — springer opslag over');
+        log.log('[' + label + '] Cache: ingen match for …' + key.slice(-4) + ' (tjekket for ' + agoText + ' siden) — springer opslag over');
       }
       return null;
     }
 
-    if (s.stopPipedrive || isPaused()) return deferred(s, 'pause');
-    if (s.lookups >= maxLookupsPerRun) return deferred(s, 'loft');
+    if (s[keys.stop] || isPaused()) return deferred(s, 'pause');
+    if ((s[keys.lookups] || 0) >= maxLookupsPerRun) return deferred(s, 'loft');
 
-    s.lookups++;
+    s[keys.lookups] = (s[keys.lookups] || 0) + 1;
     const result = await search(phoneNumber);
     if (!result || result.status === 'error') return deferred(s, 'fejl'); // aldrig cachet som "ingen match"
     if (result.status === 'none') {
-      putNone.run(key, t, t);
+      // Inden for den første time beholdes tidspunktet for første miss; ellers starter en ny time
+      putNone.run(crm, key, t, inFirstHour ? row.first_miss_at : t);
       return null;
     }
-    const { latestDealId = null } = (await getDeals(result.person.id)) || {};
-    putMatch.run(key, result.person.id, latestDealId, t);
-    return { personId: result.person.id, latestDealId };
+    const links = (await getDeals(result.person.id, result.person)) || {};
+    const row2 = {
+      person_id: asText(result.person.id),
+      latest_deal_id: asText(links.latestDealId),
+      company_id: asText(links.companyId),
+      onboarding_id: asText(links.onboardingId),
+    };
+    putMatch.run(crm, key, row2.person_id, row2.latest_deal_id, row2.company_id, row2.onboarding_id, t);
+    return toMatch(row2);
   }
 
-  // Nummeret er koblet til en person et andet sted (fx click-to-call fra Pipedrive)
-  function remember(phoneNumber, personId, latestDealId = null) {
+  // Nummeret er koblet til en person et andet sted (fx click-to-call)
+  function remember(phoneNumber, personId, latestDealId = null, extra = {}) {
     const key = last8(phoneNumber);
     if (key.length < 8 || !personId) return;
-    putMatch.run(key, personId, latestDealId, now());
+    putMatch.run(crm, key, asText(personId), asText(latestDealId), asText(extra.companyId), asText(extra.onboardingId), now());
   }
 
   function forget(phoneNumber) {
     const key = last8(phoneNumber);
     if (key.length < 8) return;
-    del.run(key);
+    del.run(crm, key);
     hitLoggedAt.delete(key);
   }
 
-  return { lookup, remember, forget };
+  return { lookup, remember, forget, crm };
 }
 
-module.exports = { createPhoneLookupCache, last8, POSITIVE_TTL_MS, NEGATIVE_TTL_MS, MAX_LOOKUPS_PER_RUN };
+module.exports = {
+  createPhoneLookupCache, last8, POSITIVE_TTL_MS, NEGATIVE_TTL_MS, NEGATIVE_FIRST_HOUR_TTL_MS, FIRST_HOUR_MS, MAX_LOOKUPS_PER_RUN,
+};

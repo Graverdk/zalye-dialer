@@ -453,4 +453,9 @@ module.exports = {
   ensureSmsActivityType,
   createRelatelNote,
   createPerson,
+  // Formattering (genbruges af Twenty-adapteren, så labels er ens)
+  buildCallNoteContent,
+  buildInsightBlock,
+  buildPipedriveBlock,
+  buildSmsContent,
 };

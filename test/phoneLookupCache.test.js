@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const Database = require('better-sqlite3');
 const runStats = require('../src/services/runStats');
-const { createPhoneLookupCache, NEGATIVE_TTL_MS } = require('../src/services/phoneLookupCache');
+const { createPhoneLookupCache, NEGATIVE_TTL_MS, NEGATIVE_FIRST_HOUR_TTL_MS } = require('../src/services/phoneLookupCache');
 
 const NUMBER = '+45 92 82 10 85';
 
@@ -96,4 +96,53 @@ test('fundet person caches og giver deal med', async () => {
   const { cache } = setup({ results: [{ status: 'found', person: { id: 5 } }] });
   const r = await runStats.run('test', () => cache.lookup(NUMBER), { log: quiet });
   assert.deepStrictEqual(r, { personId: 5, latestDealId: 7 });
+});
+
+test('gammel tabel (kun sidste 8, INTEGER-id) flyttes til (crm, sidste 8) uden at tabe rækker', async () => {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE phone_lookups (number_last8 TEXT PRIMARY KEY, person_id INTEGER, latest_deal_id INTEGER, checked_at INTEGER NOT NULL, first_miss_at INTEGER)`);
+  const t = Date.now();
+  db.prepare('INSERT INTO phone_lookups VALUES (?, ?, ?, ?, NULL)').run('92821085', 42, 9, t);
+  db.prepare('INSERT INTO phone_lookups VALUES (?, NULL, NULL, ?, ?)').run('22751363', t, t);
+  const calls = [];
+  const origLog = console.log; console.log = () => {};
+  const cache = createPhoneLookupCache({ db, search: async (p) => { calls.push(p); return { status: 'none' }; }, getDeals: async () => ({}), log: quiet });
+  console.log = origLog;
+  const cols = db.prepare('PRAGMA table_info(phone_lookups)').all().map((c) => c.name);
+  assert.ok(cols.includes('crm'));
+  const r = await runStats.run('test', () => cache.lookup(NUMBER), { log: quiet });
+  assert.deepStrictEqual(r, { personId: 42, latestDealId: 9 }, 'Pipedrive-id er stadig et tal');
+  assert.strictEqual(await runStats.run('test', () => cache.lookup('+45 22 75 13 63'), { log: quiet }), null, '"ingen match" bevaret');
+  assert.strictEqual(calls.length, 0);
+});
+
+test('Twenty og Pipedrive deler tabel, men ikke rækker', async () => {
+  const db = new Database(':memory:');
+  const mk = (crm, id) => createPhoneLookupCache({ db, crm, search: async () => ({ status: 'found', person: { id } }), getDeals: async () => ({ latestDealId: null }), log: quiet });
+  const pd = mk('pipedrive', 5);
+  const tw = mk('twenty', 'a1b2c3d4-0000-4000-8000-000000000001');
+  assert.strictEqual((await runStats.run('t', () => pd.lookup(NUMBER), { log: quiet })).personId, 5);
+  assert.strictEqual((await runStats.run('t', () => tw.lookup(NUMBER), { log: quiet })).personId, 'a1b2c3d4-0000-4000-8000-000000000001');
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM phone_lookups').get().n, 2);
+});
+
+test('"ingen match": 15 min den første time, derefter 24 timer — og en ny time efter et døgn', async () => {
+  const clock = { t: 5_000_000 };
+  const { cache, calls } = setup({ clock });
+  const look = () => runStats.run('test', () => cache.lookup(NUMBER), { log: quiet });
+  await look();                                         // første miss
+  clock.t += 10 * 60 * 1000; await look();              // +10 min: cache
+  assert.strictEqual(calls.length, 1);
+  clock.t += 6 * 60 * 1000; await look();               // +16 min: nyt opslag (15 min-reglen)
+  assert.strictEqual(calls.length, 2);
+  clock.t += 16 * 60 * 1000; await look();              // +32 min
+  clock.t += 16 * 60 * 1000; await look();              // +48 min
+  assert.strictEqual(calls.length, 4, 'opslag ved 0, 16, 32 og 48 min');
+  clock.t += 16 * 60 * 1000; await look();              // +64 min: efter første time gælder 24 t fra seneste tjek
+  clock.t += 10 * 3600 * 1000; await look();            // +10 t: stadig cache
+  assert.strictEqual(calls.length, 4, 'efter første time højst ét opslag pr. døgn');
+  clock.t += NEGATIVE_TTL_MS; await look();              // døgnet er gået: nyt opslag, og en ny første time starter
+  assert.strictEqual(calls.length, 5);
+  clock.t += NEGATIVE_FIRST_HOUR_TTL_MS + 1000; await look();
+  assert.strictEqual(calls.length, 6, 'ny første time efter døgnet');
 });

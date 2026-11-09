@@ -20,6 +20,14 @@ function createStats(name = null) {
     deferred: 0,          // opslag udskudt til næste kørsel (loft eller pause)
     stopPipedrive: false, // sat ved 401: resten af kørslen rører ikke Pipedrive
     stopRelatel: false,   // sat ved 401 fra Relatel
+    // Twenty (CRM_MODE=dual|twenty) — samme betydning som Pipedrive-tællerne
+    twentyCalls: 0,
+    twentySkipped: 0,
+    twentyErrors: 0,
+    twentyCacheHits: 0,
+    twentyLookups: 0,
+    twentyDeferred: 0,
+    stopTwenty: false,
     authFailures: new Set(),
   };
 }
@@ -33,7 +41,20 @@ function summaryLine(s) {
     + ' · Cache: ingen match: ' + s.cacheHits
     + ' · udskudt: ' + s.deferred
     + ' · holdt tilbage (pause): ' + s.pipedriveSkipped
-    + ' · fejl: Pipedrive ' + s.pipedriveErrors + ', Relatel ' + s.relatelErrors;
+    + ' · fejl: Pipedrive ' + s.pipedriveErrors + ', Relatel ' + s.relatelErrors
+    + twentySummary(s);
+}
+
+// Twenty-delen tages kun med, når kørslen faktisk rørte Twenty, så loglinjen
+// er uændret ved CRM_MODE=pipedrive
+function twentySummary(s) {
+  const touched = s.twentyCalls + s.twentySkipped + s.twentyErrors + s.twentyCacheHits + s.twentyDeferred;
+  if (!touched) return '';
+  return ' · Twenty-kald: ' + s.twentyCalls
+    + ' · Twenty cache: ingen match: ' + s.twentyCacheHits
+    + ' · Twenty udskudt: ' + s.twentyDeferred
+    + ' · Twenty holdt tilbage: ' + s.twentySkipped
+    + ' · Twenty fejl: ' + s.twentyErrors;
 }
 
 async function run(name, fn, { onEnd, log = console } = {}) {

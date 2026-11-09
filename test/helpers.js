@@ -18,6 +18,18 @@ const defaults = {
 };
 for (const [k, v] of Object.entries(defaults)) process.env[k] = v;
 
+// Intet netværk i tests: rigtige kald til Pipedrive, Twenty, Relatel, Anthropic
+// eller alarm-webhooken fejler med det samme. Tests bruger stubs/mocks
+// (test/mockTwenty.js, _setFetch på vagterne).
+const nodeFetch = require('node-fetch');
+function noNetwork(url) {
+  return Promise.reject(new Error('Netværk er slået fra i tests: ' + String(url).split('?')[0]));
+}
+Object.assign(noNetwork, nodeFetch, {
+  Response: nodeFetch.Response, Headers: nodeFetch.Headers, Request: nodeFetch.Request, FetchError: nodeFetch.FetchError,
+});
+require.cache[require.resolve('node-fetch')].exports = noNetwork;
+
 function tmpDbPath(name) {
   return path.join(dir, name + '-' + Math.random().toString(36).slice(2) + '.db');
 }
