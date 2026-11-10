@@ -67,3 +67,17 @@
   er derfor valgfrie og kan slettes i Railway. Dataflowet (Relatel → Pipedrive) bruger kun `PIPEDRIVE_API_TOKEN`.
 - Uden dem er panel-adgangen (`/api/calls`, `/api/messages`, `/auth/session`) kun åben med `ADMIN_SECRET`,
   og `/auth/callback` svarer 410.
+
+## Kobling til salgscoachen (11/2026)
+- Salgscoachen (web-appen `zalye-salgscoach-web`) starter opkald med `POST /api/calls/initiate` og læser dem med
+  `GET /api/calls`. Den bruger headeren `X-Service-Token` = `COACH_SERVICE_TOKEN` og behøver ikke `ADMIN_SECRET`.
+  Uden `COACH_SERVICE_TOKEN` er adgangen slået fra, og intet er ændret.
+- `initiate` tager også `twentyPersonId`, `twentyCompanyId`, `twentyOpportunityId` og `moedebookerId`. De gemmes på det
+  foreløbige opkald og overføres til det rigtige opkald ved næste poll. Kan Relatel-brugeren ikke matches til en
+  mødebooker, bruges den medsendte mødebooker.
+- Coachingen er ikke længere bundet til én sælger. Navn og rolle kommer fra opkaldet (Relatel-bruger → mødebooker).
+  Ellers bruges `DEFAULT_SELLER_NAME` (standard `Jeppe`, så coachingen er uændret). En mødebookers kald vurderes mod
+  mødebooker-målet: et booket møde med de rette personer. Historikken tæller kun sælgerens egne kald.
+- `TWENTY_DEFAULT_OWNER_MEMBER_ID` er det nye navn for standardejeren. `TWENTY_JEPPE_MEMBER_ID` virker stadig som fallback.
+- `src/coaching/playbook.md` er fælles med salgscoachen (`knowledge/playbook.md` der). **De to skal holdes ens.**
+

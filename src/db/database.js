@@ -217,6 +217,8 @@ for (const table of ['calls', 'messages']) {
   ensureColumn(table, 'twenty_opportunity_id', 'TEXT');
   ensureColumn(table, 'twenty_onboarding_id', 'TEXT');
 }
+// Mødebookeren, når kaldet er startet fra salgscoachen (fallback, hvis Relatel-brugeren ikke kan matches)
+ensureColumn('calls', 'twenty_moedebooker_id', 'TEXT');
 // Hvornår signalerne for kaldet blev oprettet (ISO) — så et genforsøg ikke laver dubletter
 ensureColumn('calls', 'twenty_signaler_at', 'TEXT');
 ensureColumn('relatel_notes', 'twenty_record_id', 'TEXT');
@@ -234,7 +236,7 @@ db.exec(`
 const ALLOWED_COLUMNS = new Set([
   'pipedrive_person_id', 'pipedrive_deal_id', 'pipedrive_note_id', 'pipedrive_activity_id',
   'twenty_samtale_id', 'twenty_person_id', 'twenty_company_id', 'twenty_opportunity_id',
-  'twenty_onboarding_id', 'twenty_record_id', 'twenty_signaler_at',
+  'twenty_onboarding_id', 'twenty_record_id', 'twenty_signaler_at', 'twenty_moedebooker_id',
 ]);
 function assertColumn(c) {
   if (!ALLOWED_COLUMNS.has(c)) throw new Error('Ukendt kolonne: ' + c);

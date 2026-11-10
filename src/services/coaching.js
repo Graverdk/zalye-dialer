@@ -58,6 +58,16 @@ function talkStats(diarized) {
   };
 }
 
+// Sælgeren kommer fra opkaldet (Relatel-bruger → mødebooker, ellers standardsælgeren).
+// Intet er bundet til én person: navnet sættes ind i prompten og i værktøjets tekster.
+function sellerName(seller) {
+  return (seller && seller.name) || config.coaching.defaultSellerName;
+}
+// {S} i værktøjets tekster er sælgerens navn
+function toolFor(navn) {
+  return JSON.parse(JSON.stringify(COACHING_TOOL).split('{S}').join(String(navn).replace(/["\\]/g, '')));
+}
+
 const strList = (description, maxItems) => ({ type: 'array', items: { type: 'string' }, description, ...(maxItems ? { maxItems } : {}) });
 
 const COACHING_TOOL = {
@@ -69,7 +79,7 @@ const COACHING_TOOL = {
       moedetype: {
         type: 'string',
         enum: ['Første kald', 'Genopkald', 'Demo', 'Opfølgning', 'Opstart', 'Support', 'Partner', 'Omstilling'],
-        description: '"Omstilling" når Jeppe ikke fik fat i beslutningstageren (fx en kollega tog telefonen).',
+        description: '"Omstilling" når {S} ikke fik fat i beslutningstageren (fx en kollega tog telefonen).',
       },
       formaal: { type: 'string', description: 'Det rigtige formål og exit-kriterie for netop dette kald ifølge playbooken, i én sætning.' },
       exit_naaet: { type: 'string', enum: ['ja', 'delvist', 'nej'] },
@@ -81,8 +91,8 @@ const COACHING_TOOL = {
         properties: Object.fromEntries(BLOKKE.map((b) => [b, { type: 'string', enum: BLOK_STATUS }])),
         required: BLOKKE,
       },
-      voss_brugt: { type: 'array', items: { type: 'string', enum: VOSS }, description: 'Teknikker Jeppe faktisk brugte. Tom liste hvis ingen.' },
-      styrker: strList('1-3 ting der virkede, hver med et kort ordret citat fra Jeppe.', 3),
+      voss_brugt: { type: 'array', items: { type: 'string', enum: VOSS }, description: 'Teknikker {S} faktisk brugte. Tom liste hvis ingen.' },
+      styrker: strList('1-3 ting der virkede, hver med et kort ordret citat fra {S}.', 3),
       mere_vaegt_paa: {
         type: 'array',
         maxItems: 3,
@@ -116,7 +126,7 @@ const COACHING_TOOL = {
         type: ['string', 'null'],
         description: 'Det ene øjeblik hvor kaldet kunne være gået længere: kort citat af hvad der blev sagt + hvad han kunne have sagt i stedet. null hvis intet.',
       },
-      bedste_replik: { type: ['string', 'null'], description: 'Jeppes bedste replik ordret, hvis en er værd at gemme i playbooken. Ellers null.' },
+      bedste_replik: { type: ['string', 'null'], description: '{S}s bedste replik ordret, hvis en er værd at gemme i playbooken. Ellers null.' },
       oevelse: { type: 'string', description: 'ÉN konkret ting at øve i næste kald. Kort og målbar.' },
       moenster: { type: ['string', 'null'], description: 'Hvis historikken viser at det samme hul går igen, sig det direkte med antal. Ellers null.' },
       karakter: { type: 'integer', minimum: 1, maximum: 10, description: 'Samlet karakter for kaldet ift. dets formål.' },
@@ -127,10 +137,15 @@ const COACHING_TOOL = {
 };
 
 // Kort sammendrag af de seneste coachede kald, så coachen følger udviklingen
-function summarizeHistory(rows) {
+// Kun sælgerens egne kald tæller: kald uden "saelger" er standardsælgerens (før 11/2026).
+function summarizeHistory(rows, seller) {
+  const navn = sellerName(seller);
+  const erStandard = navn === config.coaching.defaultSellerName;
   const items = (rows || []).map((r) => {
     try { return { at: r.started_at, c: JSON.parse(r.coaching_json) }; } catch { return null; }
-  }).filter((x) => x && x.c && x.c.moedetype !== 'Omstilling');
+  }).filter((x) => x && x.c && x.c.moedetype !== 'Omstilling')
+    .filter((x) => (x.c.saelger && x.c.saelger.navn ? x.c.saelger.navn === navn : erStandard))
+    .slice(0, 10);
   if (!items.length) return 'Ingen tidligere coachede kald endnu.';
   const n = items.length;
   const lines = [`De seneste ${n} coachede kald (nyeste først):`];
@@ -140,17 +155,24 @@ function summarizeHistory(rows) {
   }
   lines.push(`- Exit nået: ${items.filter((i) => i.c.exit_naaet === 'ja').length} af ${n}`);
   const talk = items.map((i) => i.c.tale && i.c.tale.saelgerPct).filter((x) => Number.isFinite(x));
-  if (talk.length) lines.push(`- Jeppes taleandel i snit: ${Math.round(talk.reduce((a, b) => a + b, 0) / talk.length)} %`);
+  if (talk.length) lines.push(`- ${navn}s taleandel i snit: ${Math.round(talk.reduce((a, b) => a + b, 0) / talk.length)} %`);
   lines.push('- Seneste øvelser: ' + items.slice(0, 5).map((i) => `"${i.c.oevelse}"`).join(' · '));
   return lines.join('\n');
 }
 
-async function coachCall({ transcription, direction = 'outgoing', durationSec, analysis, history }) {
+async function coachCall({ transcription, direction = 'outgoing', durationSec, analysis, history, seller }) {
+  const navn = sellerName(seller);
+  const erBooker = !!(seller && seller.role === 'moedebooker');
+  const tool = toolFor(navn);
+  // Playbooken beskriver standardsælgeren. Er det en anden, der ringer, siges det tydeligt.
+  const andenSaelger = seller && seller.name && (erBooker || navn !== config.coaching.defaultSellerName)
+    ? `\n\nDETTE KALD er ført af ${navn}${erBooker ? ', som er mødebooker' : ''}, ikke af sælgeren i playbookens afsnit "Sælgeren". Se bort fra det afsnit, og tal til ${navn}.${erBooker ? ` En mødebookers mål er ét: et booket møde (driftsanalysen) med de rette personer hos kunden. Vurdér kaldet mod det mål: kom ${navn} igennem til beslutningstageren, blev mødet booket med dato, og er de rette personer med? En mødebooker skal ikke lave hele behovsafdækningen, så blokkene Konsekvens og Beslutning er kun relevante i det omfang, de hjælper med at få mødet.` : ''}`
+    : '';
   const talk = talkStats(transcription);
   const playbook = loadPlaybook();
   const dirText = direction === 'outgoing' ? 'udgående' : 'indgående';
 
-  const prompt = `Du er Danmarks bedste B2B-telefonsælger og salgscoach. Du har selv solgt til danske håndværksmestre og ejendomsservice-virksomheder i årevis, og du coacher Jeppe fra Zalye efter hvert kald.
+  const prompt = `Du er Danmarks bedste B2B-telefonsælger og salgscoach. Du har selv solgt til danske håndværksmestre og ejendomsservice-virksomheder i årevis, og du coacher ${navn} fra Zalye efter hvert kald.
 
 Din coaching er ærlig, konkret og kort. Du roser kun det, der faktisk virkede, og du siger direkte, hvad der kostede kaldet noget. Alt skal kunne bruges i næste kald: brug citater fra transskriptet og giv replikker på naturligt dansk, som en håndværker ville sige dem. Ingen floskler, ingen engelske salgsord.
 
@@ -161,17 +183,17 @@ Registrér med værktøjet registrer_coaching. Regler:
 - "mere_vaegt_paa": de 1-3 ting der ville have flyttet kaldet mest. Vigtigste først.
 - "spilleregler": vælg de 1-3 sælgere fra playbooken, hvis regel betød mest i netop dette kald. Nævn dem ved navn, og citér aldrig deres bøger.
 - "moenster": brug historikken. Går det samme hul igen, så sig det med antal.
-- Skriv på korrekt dansk med æ, ø, å. Tal til Jeppe i du-form.
+- Skriv på korrekt dansk med æ, ø, å. Tal til ${navn} i du-form.${andenSaelger}
 
 PLAYBOOK:
 ${playbook}
 
 KALDET: ${dirText}, varighed ${durationSec || '?'} sek.
-${talk ? `Talefordeling (beregnet): Jeppe ${talk.saelgerPct} %, kunden ${talk.kundePct} %. Jeppe stillede ${talk.saelgerSpoergsmaal} spørgsmål. Længste replik fra Jeppe: ${talk.laengsteSaelgerReplikOrd} ord.` : 'Talefordeling: kunne ikke beregnes.'}
+${talk ? `Talefordeling (beregnet): ${navn} ${talk.saelgerPct} %, kunden ${talk.kundePct} %. ${navn} stillede ${talk.saelgerSpoergsmaal} spørgsmål. Længste replik fra ${navn}: ${talk.laengsteSaelgerReplikOrd} ord.` : 'Talefordeling: kunne ikke beregnes.'}
 ${analysis ? `Analytikerens resumé: ${analysis.summary || ''}\nAnalytikerens udfald: ${analysis.callOutcome || '?'} · næste skridt: ${(analysis.nextSteps || []).join('; ') || 'ingen'}` : ''}
 
 HISTORIK:
-${summarizeHistory(history)}
+${summarizeHistory(history, seller)}
 
 TRANSSKRIPTION:
 ${transcription}`;
@@ -179,13 +201,16 @@ ${transcription}`;
   const message = await anthropic.messages.create({
     model: config.anthropic.model,
     max_tokens: 3000,
-    tools: [COACHING_TOOL],
-    tool_choice: { type: 'tool', name: COACHING_TOOL.name },
+    tools: [tool],
+    tool_choice: { type: 'tool', name: tool.name },
     messages: [{ role: 'user', content: prompt }],
   });
   const toolUse = message.content.find((b) => b.type === 'tool_use' && b.name === COACHING_TOOL.name);
   if (!toolUse) throw new Error('Claude returnerede ingen coaching (stop_reason: ' + message.stop_reason + ')');
-  return { schemaVersion: COACHING_SCHEMA_VERSION, ...toolUse.input, tale: talk };
+  return {
+    schemaVersion: COACHING_SCHEMA_VERSION, ...toolUse.input, tale: talk,
+    ...(seller && seller.name ? { saelger: { navn, rolle: erBooker ? 'moedebooker' : 'saelger' } } : {}),
+  };
 }
 
 // ------------------------------------------------------------
@@ -204,7 +229,7 @@ function buildCoachingBlock(c) {
     `Formål: ${clean(c.formaal)}`,
     `Exit: ${clean(c.exit_begrundelse)}`,
     `Blokke: ${blokke}`,
-    c.tale ? `Tale: Jeppe ${c.tale.saelgerPct} %  ·  Kunde ${c.tale.kundePct} %  ·  Spørgsmål ${c.tale.saelgerSpoergsmaal}` : 'Tale: ukendt',
+    c.tale ? `Tale: ${(c.saelger && c.saelger.navn) || config.coaching.defaultSellerName} ${c.tale.saelgerPct} %  ·  Kunde ${c.tale.kundePct} %  ·  Spørgsmål ${c.tale.saelgerSpoergsmaal}` : 'Tale: ukendt',
     `Voss brugt: ${(c.voss_brugt || []).length ? c.voss_brugt.join('; ') : none}`,
     `Styrker: ${(c.styrker || []).length ? c.styrker.map(clean).join('; ') : none}`,
     `Mere vægt på: ${vægt.length ? vægt.join('; ') : none}`,
@@ -217,4 +242,4 @@ function buildCoachingBlock(c) {
   return `### Coaching (skema v${c.schemaVersion || COACHING_SCHEMA_VERSION})\n${lines.map((l) => `- ${l}`).join('\n')}\n\n`;
 }
 
-module.exports = { coachCall, buildCoachingBlock, talkStats, summarizeHistory, COACHING_SCHEMA_VERSION, MESTRE };
+module.exports = { coachCall, buildCoachingBlock, talkStats, summarizeHistory, sellerName, toolFor, COACHING_SCHEMA_VERSION, MESTRE };

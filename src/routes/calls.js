@@ -1,15 +1,19 @@
 const express = require('express');
 const router = express.Router();
 const relatel = require('../services/relatel');
-const { calls, state } = require('../db/database');
-const { requirePanelAuth, requireAdmin } = require('../middleware/auth');
+const { calls, state, db } = require('../db/database');
+const { requirePanelAuth, requireServiceOrPanel, requireAdmin } = require('../middleware/auth');
+
+// Twenty-id'er er UUID'er. Alt andet ignoreres, så der aldrig gemmes vilkårlig tekst.
+const uuidOrNull = (v) => (typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) ? v : null);
 
 // ============================================================
 // POST /api/calls/initiate
 // Start et udgående opkald via Relatel
-// Body: { toNumber, personId?, dealId?, restrictTo? }
+// Body: { toNumber, personId?, dealId?, restrictTo?,
+//         twentyPersonId?, twentyCompanyId?, twentyOpportunityId?, moedebookerId? }
 // ============================================================
-router.post('/initiate', requirePanelAuth, async (req, res) => {
+router.post('/initiate', requireServiceOrPanel, async (req, res) => {
   const { toNumber, personId, dealId, restrictTo = '' } = req.body;
 
   if (!toNumber) {
@@ -40,6 +44,19 @@ router.post('/initiate', requirePanelAuth, async (req, res) => {
       pipedrive_person_id: personId || null,
       pipedrive_deal_id:  dealId || null,
     });
+    // Twenty-koblingen fra salgscoachen: vi VED hvem der blev ringet til.
+    // Overføres til det rigtige opkald ved næste poll (pollCalls.js).
+    const twentyIds = {
+      twenty_person_id: uuidOrNull(req.body.twentyPersonId),
+      twenty_company_id: uuidOrNull(req.body.twentyCompanyId),
+      twenty_opportunity_id: uuidOrNull(req.body.twentyOpportunityId),
+      twenty_moedebooker_id: uuidOrNull(req.body.moedebookerId),
+    };
+    if (Object.values(twentyIds).some(Boolean)) {
+      db.prepare(`UPDATE calls SET twenty_person_id = ?, twenty_company_id = ?, twenty_opportunity_id = ?, twenty_moedebooker_id = ?
+                  WHERE relatel_uuid = ?`)
+        .run(twentyIds.twenty_person_id, twentyIds.twenty_company_id, twentyIds.twenty_opportunity_id, twentyIds.twenty_moedebooker_id, tempUuid);
+    }
 
     res.json({ success: true, message: result.message || 'Opkald igangsat' });
   } catch (err) {
@@ -53,7 +70,7 @@ router.post('/initiate', requirePanelAuth, async (req, res) => {
 // Hent opkald til sidebar panel
 // Query: ?personId=123 | ?dealId=456 | ?phone=4571...
 // ============================================================
-router.get('/', requirePanelAuth, (req, res) => {
+router.get('/', requireServiceOrPanel, (req, res) => {
   const { personId, dealId, phone, limit = 20 } = req.query;
 
   let result = [];

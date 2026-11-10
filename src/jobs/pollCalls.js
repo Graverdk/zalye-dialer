@@ -36,6 +36,21 @@ function setColumns(table, keyCol, key, values, { coalesce = [] } = {}) {
   db.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE ${keyCol} = ?`).run(...entries.map((e) => e[1]), key);
 }
 
+// Hvem førte kaldet? En mødebooker (Relatel-bruger eller id fra salgscoachen),
+// ellers standardsælgeren (null = coachingen bruger DEFAULT_SELLER_NAME som før).
+async function sellerForCall(call) {
+  if (config.crm.mode === 'pipedrive' || !config.twenty.apiKey || call.direction !== 'outgoing') return null;
+  try {
+    const twenty = require('../crm/twenty');
+    const booker = await twenty.bookerForRow(call);
+    if (!booker) return null;
+    return { name: booker.name || 'mødebookeren', role: 'moedebooker' };
+  } catch (e) {
+    console.error('[Coach] Kunne ikke slå sælgeren op:', e.message);
+    return null;
+  }
+}
+
 // Telefonopslag i det primære CRM
 async function lookupPerson(phoneNumber) {
   return crm.lookup(P, phoneNumber);
@@ -171,6 +186,13 @@ async function pollNewCalls() {
             console.log('[Poll] Click-to-call-kobling overført til ' + nc.relatel_uuid);
             // Nummeret er nu koblet til en person — ryd evt. "ingen match" i cachen
             if (temp[PC.person]) crm.remember(P, nc.phone_number, temp[PC.person], temp[PC.deal]);
+          }
+          // Twenty-id'er fra salgscoachen (også under dual, hvor Pipedrive er primær)
+          const fraCoach = Object.fromEntries(['twenty_person_id', 'twenty_company_id', 'twenty_opportunity_id', 'twenty_moedebooker_id']
+            .filter((c) => temp[c]).map((c) => [c, temp[c]]));
+          if (Object.keys(fraCoach).length) {
+            setColumns('calls', 'relatel_uuid', nc.relatel_uuid, fraCoach, { coalesce: Object.keys(fraCoach) });
+            if (fraCoach.twenty_person_id && PC.person === 'twenty_person_id' && !temp[PC.deal]) crm.remember(P, nc.phone_number, fraCoach.twenty_person_id, fraCoach.twenty_opportunity_id || null);
           }
           db.prepare("DELETE FROM calls WHERE relatel_uuid = ?").run(temp.relatel_uuid);
         }
@@ -360,10 +382,12 @@ async function processTranscriptions() {
           const history = db.prepare(`
             SELECT coaching_json, started_at FROM calls
             WHERE coaching_json IS NOT NULL AND relatel_uuid != ?
-            ORDER BY datetime(started_at) DESC LIMIT 10
+            ORDER BY datetime(started_at) DESC LIMIT 40
           `).all(call.relatel_uuid);
+          const seller = await sellerForCall(call);
           console.log('[Coach] Coacher kaldet...');
           coachingResult = await coaching.coachCall({
+            seller,
             transcription: diarizedTranscription || transcription,
             direction: call.direction,
             durationSec: call.duration_sec,

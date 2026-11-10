@@ -83,13 +83,16 @@ module.exports = {
     // Over denne længde afkortes transskriptet i Twenty (fuld tekst bliver i dialeren)
     transcriptMaxChars: int('TWENTY_TRANSCRIPT_MAX_CHARS', 100000),
     // Workspace member for Jeppe: fortAf på samtaler og modtager af opgaver
-    jeppeMemberId: optional('TWENTY_JEPPE_MEMBER_ID', ''),
+    // Standardejer: fortAf på samtaler uden mødebooker og modtager af opgaver.
+    // TWENTY_JEPPE_MEMBER_ID er det gamle navn og virker stadig som fallback.
+    defaultOwnerMemberId: optional('TWENTY_DEFAULT_OWNER_MEMBER_ID', '') || optional('TWENTY_JEPPE_MEMBER_ID', ''),
+    jeppeMemberId: optional('TWENTY_DEFAULT_OWNER_MEMBER_ID', '') || optional('TWENTY_JEPPE_MEMBER_ID', ''),
     // Loft over Twenty-kald pr. kørsel (job-tick). Resten venter til næste kørsel
     maxCallsPerRun: int('TWENTY_MAX_CALLS_PER_RUN', 60),
     // Opgave ved ukendt nummer: minimumsvarighed (sek.) og modtager (standard Jeppe).
     // TWENTY_UNKNOWN_NUMBER_MIN_SEC=-1 slår opgaverne fra.
     unknownNumberMinSec: int('TWENTY_UNKNOWN_NUMBER_MIN_SEC', 25),
-    unknownNumberAssigneeId: optional('TWENTY_UNKNOWN_NUMBER_ASSIGNEE_ID', '') || optional('TWENTY_JEPPE_MEMBER_ID', ''),
+    unknownNumberAssigneeId: optional('TWENTY_UNKNOWN_NUMBER_ASSIGNEE_ID', '') || optional('TWENTY_DEFAULT_OWNER_MEMBER_ID', '') || optional('TWENTY_JEPPE_MEMBER_ID', ''),
     timeoutMs: int('TWENTY_TIMEOUT_MS', 15000),
   },
 
@@ -103,12 +106,20 @@ module.exports = {
     panelJwtSecret: optional('PIPEDRIVE_JWT_SECRET', ''),
     // Beskytter debug-/vedligeholdelses-endpoints. Uden denne er de deaktiveret.
     adminSecret: optional('ADMIN_SECRET', ''),
+    // Service-adgang for salgscoachen (header X-Service-Token) til at starte og
+    // læse opkald. Tom = slået fra, og så ændrer intet sig.
+    coachServiceToken: optional('COACH_SERVICE_TOKEN', ''),
     // Hvis sat: Relatel-webhook skal kalde /api/webhook/relatel?secret=<denne>
     webhookSecret: optional('WEBHOOK_SECRET', ''),
     // Signeringsnøglen Relatel viser når webhooken oprettes (Firmaadministration → Webhooks).
     // Når den er sat, afvises alt uden gyldig Relatel-Signature, og polling
     // skrues ned til et sikkerhedsnet hvert 15. minut.
     relatelWebhookSigningSecret: optional('RELATEL_WEBHOOK_SECRET', ''),
+  },
+
+  coaching: {
+    // Den sælger, coachingen taler til, når kaldet ikke kan føres til en mødebooker
+    defaultSellerName: optional('DEFAULT_SELLER_NAME', 'Jeppe'),
   },
 
   alerts: {
