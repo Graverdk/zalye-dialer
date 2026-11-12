@@ -10,6 +10,7 @@
 //    Er ADMIN_SECRET ikke sat, er disse endpoints helt deaktiverede.
 // ============================================================
 
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 
@@ -58,6 +59,22 @@ function requirePanelAuth(req, res, next) {
   }
 }
 
+// Salgscoachen (server til server): header X-Service-Token = COACH_SERVICE_TOKEN.
+// Uden COACH_SERVICE_TOKEN er adgangen slået fra, og kaldet falder tilbage til
+// panel-/admin-adgangen som før.
+function isCoachService(req) {
+  const secret = config.security.coachServiceToken;
+  const given = req.headers['x-service-token'];
+  if (!secret || typeof given !== 'string') return false;
+  const a = Buffer.from(secret); const b = Buffer.from(given);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function requireServiceOrPanel(req, res, next) {
+  if (isCoachService(req)) { req.auth = { scope: 'coach' }; return next(); }
+  return requirePanelAuth(req, res, next);
+}
+
 function requireAdmin(req, res, next) {
   if (!config.security.adminSecret) {
     return res.status(503).json({ error: 'ADMIN_SECRET er ikke konfigureret — endpoint deaktiveret' });
@@ -68,4 +85,4 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-module.exports = { requirePanelAuth, requireAdmin, verifyToken, signSessionToken, SESSION_TTL_HOURS };
+module.exports = { requirePanelAuth, requireServiceOrPanel, requireAdmin, verifyToken, signSessionToken, SESSION_TTL_HOURS };

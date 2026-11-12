@@ -146,6 +146,15 @@ async function findMoedebooker(employeeNumber) {
   }) || null;
 }
 
+// Mødebookeren for et opkald: først Relatel-brugeren, ellers den booker
+// salgscoachen sendte med, da opkaldet blev startet (calls.twenty_moedebooker_id)
+async function bookerForRow(row) {
+  if (!row) return null;
+  const viaRelatel = await findMoedebooker(row.employee_number);
+  if (viaRelatel) return viaRelatel;
+  return row.twenty_moedebooker_id ? { id: row.twenty_moedebooker_id } : null;
+}
+
 // ------------------------------------------------------------
 // Samtaler (idempotent via eksterntId)
 // ------------------------------------------------------------
@@ -194,7 +203,7 @@ function relations(match, { moedebookerId } = {}) {
   if (match && match.latestDealId) out[S.salgsmulighedId] = match.latestDealId;
   if (match && match.onboardingId) out[S.onboardingId] = match.onboardingId;
   if (moedebookerId) out[S.moedebookerId] = moedebookerId;
-  else if (config.twenty.jeppeMemberId) out[S.fortAfId] = config.twenty.jeppeMemberId;
+  else if (config.twenty.defaultOwnerMemberId) out[S.fortAfId] = config.twenty.defaultOwnerMemberId;
   return out;
 }
 
@@ -203,7 +212,7 @@ const isoOrNull = (v) => { const d = v ? new Date(v) : null; return d && !isNaN(
 
 async function callBaseFields(row, match) {
   const S = M.SAMTALE;
-  const booker = row.direction === 'outgoing' ? await findMoedebooker(row.employee_number) : null;
+  const booker = row.direction === 'outgoing' ? await bookerForRow(row) : null;
   return {
     fields: {
       [S.name]: 'Opkald — ' + (row.direction === 'outgoing' ? 'Udgående' : 'Indgående'),
@@ -382,7 +391,7 @@ async function autofill({ match, analysis, coaching, row } = {}) {
           upd[O.stage] = M.STAGE.DEMO_BOOKET;
           result.stageChange = { from: opp[O.stage], to: M.STAGE.DEMO_BOOKET };
         }
-        const booker = row && row.direction === 'outgoing' ? await findMoedebooker(row.employee_number) : null;
+        const booker = row && row.direction === 'outgoing' ? await bookerForRow(row) : null;
         if (booker && isEmpty(opp[O.booketAfId])) { upd[O.booketAfId] = booker.id; labels[O.booketAfId] = 'Booket af'; }
       }
 
@@ -659,6 +668,7 @@ module.exports = {
   buildResume,
   personHasNumber,
   findMoedebooker,
+  bookerForRow,
   uuidv5,
   cph1600,
   callExternalId,
